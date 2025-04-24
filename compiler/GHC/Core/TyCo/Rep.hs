@@ -1683,7 +1683,7 @@ holes `HoleCo`, which get filled in later.
 data CoercionHole
   = CoercionHole { ch_co_var  :: CoVar
                        -- See Note [CoercionHoles and coercion free variables]
-
+                  -- ! FLAG -> This'll be incredibly useful for arbitrary function promotion, fyi
                  , ch_ref :: IORef (Maybe Coercion)
 
                  , ch_hetero_kind :: Bool

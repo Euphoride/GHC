@@ -588,11 +588,13 @@ CoAxiomRules come in four flavours:
   more generally coercions (see Note [Coercion axioms applied to coercions]
   in GHC.Core.TyCo.Rep).
 
+
+!FLAG +inj-1 -> This will eventually need to be removed someday 
 * BuiltInFamInj: provides evidence for the injectivity of type families
   For example
       (ax3)   g1: a+b ~ 0        --->  a~0
       (ax4)   g2: a+b ~ 0        --->  b~0
-      (ax5)   g3: a+b1 ~ a~b2    --->  b1~b2
+      (ax5)   g3: a+b1 ~ a~b2    --->  b1~b2        !FLAG (+typo-1) -> Is there a typo here lmao?
   The argument to the AxiomCo is the full coercion (always just one).
   So then:
       AxiomCo ax3 [g1] :: a ~ 0
@@ -611,6 +613,9 @@ CoAxiomRules come in four flavours:
     - Newtypes
     - Data family instances
     - Open type family instances
+
+
+!FLAG -> Any extra axioms we had will go here ( +axiom-1 )
 
 Note [Avoiding allocating lots of CoAxiomRules]
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -643,12 +648,20 @@ data CoAxiomRule
                                                        --    data family instances
                                                        --    and newtypes
 
+-- !FLAG +axiom-1 -> i.e. let's suppose I add a freeze axiom evidence, goes here. Wonder why we don't have 
+-- ! the usual refl/sym/trans/etc here.
+
 instance Eq CoAxiomRule where
   (BuiltInFamRew  bif1)  == (BuiltInFamRew  bif2)  = bifrw_name  bif1 == bifrw_name bif2
   (BuiltInFamInj bif1)   == (BuiltInFamInj bif2)   = bifinj_name bif1 == bifinj_name bif2
   (UnbranchedAxiom ax1)  == (UnbranchedAxiom ax2)  = getUnique ax1 == getUnique ax2
   (BranchedAxiom ax1 i1) == (BranchedAxiom ax2 i2) = getUnique ax1 == getUnique ax2 && i1 == i2
   _ == _ = False
+
+  -- !FLAG +axiom-2 -> More changes in these implementaitons for equality, roles, etc
+
+
+-- !FLAG +query-1 -> Is this always `Nominal` then?
 
 coAxiomRuleRole :: CoAxiomRule -> Role
 coAxiomRuleRole (BuiltInFamRew  {})  = Nominal
@@ -717,6 +730,8 @@ data BuiltInFamInjectivity  -- Argument and result role are always Nominal
             -- ill-formed, and Core Lint checks for that.
       }
 
+
+-- !FLAG (+promotion-1) -> We're gonna make a lot of these for arbitrary function promotion
 data BuiltInFamRewrite  -- Argument roles and result role are always Nominal
   = BIF_Rewrite
       { bifrw_name   :: FastString

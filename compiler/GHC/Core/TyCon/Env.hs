@@ -49,6 +49,11 @@ import GHC.Data.Maybe
 ************************************************************************
 -}
 
+-- !FLAG (+note-2) -> This is one of those "look how i wrapped this simple concept in 50 lines of type signatures" 
+-- ! moments that functional programming is infamous for.
+-- !
+-- ! ...and of course they made sure to add both deterministic and non-deterministic versions because why make anything simple?
+
 -- | TyCon Environment
 type TyConEnv a = UniqFM TyCon a       -- Domain is TyCon
 

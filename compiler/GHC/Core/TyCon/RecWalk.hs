@@ -69,6 +69,13 @@ good to be able to unwrap multiple layers.
 The function that manages all this is checkRecTc.
 -}
 
+-- !FLAG (+note-1) -> This is insanity. From what I've understood of this mini-essay, they are taking
+-- ! a guarded recursion approach to expanding recursive newtypes. And they bail if they
+-- ! cycle too much. 
+-- !
+-- ! ... why not just say that man? This is leetcode easy material that you've turned into a 
+-- ! treatise on guarded recursion.
+
 data RecTcChecker = RC !Int (TyConEnv Int)
   -- The upper bound, and the number of times
   -- we have encountered each TyCon
@@ -99,3 +106,7 @@ checkRecTc (RC bound rec_nts) tc
       Just n | n >= bound -> Nothing
              | otherwise  -> Just (RC bound (extendTyConEnv rec_nts tc (n+1)))
       Nothing             -> Just (RC bound (extendTyConEnv rec_nts tc 1))
+
+
+-- !FLAG (+note-1) -> Yeah reading this code, this is incredible. The code is shorter than the note.
+-- ! This is why people hate this codebase.

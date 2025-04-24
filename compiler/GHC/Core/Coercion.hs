@@ -11,6 +11,9 @@
 -- as used in System FC. See 'GHC.Core.Expr' for
 -- more on System FC and how coercions fit into it.
 --
+
+-- !FLAG (+note-3): Ah yes, GHC.Core.Expr, a module that no longer exists. 
+
 module GHC.Core.Coercion (
         -- * Main data type
         Coercion, CoercionN, CoercionR, CoercionP,
@@ -419,12 +422,40 @@ decomposeCo arity co rs
   = [mkSelCo (SelTyCon n r) co | (n,r) <- [0..(arity-1)] `zip` Inf.toList rs ]
      -- Remember, SelTyCon is zero-indexed
 
+-- !FLAG (+arrow-decoration-1) -> This should be useful to modify later when we do a full
+-- ! implementation for matchability arrows with their syntactic markers
 decomposeFunCo :: HasDebugCallStack
                => Coercion  -- Input coercion
                -> (CoercionN, Coercion, Coercion)
 -- Expects co :: (s1 %m1-> t1) ~ (s2 %m2-> t2)
 -- Returns (cow :: m1 ~N m2, co1 :: s1~s2, co2 :: t1~t2)
+-- !FLAG (+arrow-decoration-1) -> Here we will want to do something where
+-- ! co :: (s1 %m1->@M1 t1) ~ (s2 %m2->@M2 t2) 
+-- ! gives us
+-- ! (cow :: m1 ~N m2, co1 :: s1~s2, co2 :: t1~t2, coM :: M1 ~ M2)
 -- actually cow will be a Phantom coercion if the input is a Phantom coercion
+
+
+
+-- !FLAG (+arrow-decoration-1) -> Here we can already start to imagine we'd have something like
+
+{--
+
+  decomposeFunCo (FunCo { fco_mult = w, fco_arg = co1, fco_res = co2, fco_matchability = coM })
+    = (w, co1, co2, coM)
+
+  decomposeFunCo co
+    = assertPpr all_ok (ppr co) $
+      ( mkSelCo (SelFun SelMult) co,
+        mkSelCo (SelFn SelMatchability) co,
+      , mkSelCo (SelFun SelArg) co
+      , mkSelCo (SelFun SelRes) co )
+    where
+      Pair s1t1 s2t2 = coercionKind co
+      all_ok = isFunTy s1t1 && isFunTy s2t2
+
+--}
+
 
 decomposeFunCo (FunCo { fco_mult = w, fco_arg = co1, fco_res = co2 })
   = (w, co1, co2)
@@ -465,6 +496,10 @@ Notes:
   So decomposePiCos carefully tests both sides of the coercion to check
   they are both foralls or both arrows.  Not doing this caused #15343.
 -}
+
+
+-- !FLAG (+todo-1) -> Recall tf a pi type is. Isn't this foreach quantification over
+-- ! runtime values? Or does this have a different definition in this context?
 
 decomposePiCos :: HasDebugCallStack
                => CoercionN -> Pair Type  -- Coercion and its kind
@@ -530,12 +565,19 @@ decomposePiCos orig_co (Pair orig_k1 orig_k2) orig_args
 -- | Extract a covar, if possible. This check is dirty. Be ashamed
 -- of yourself. (It's dirty because it cares about the structure of
 -- a coercion, which is morally reprehensible.)
+-- ! FLAG (+note-1) -> Yeah and your documentation style isn't reprehensible?
 getCoVar_maybe :: Coercion -> Maybe CoVar
 getCoVar_maybe (CoVarCo cv) = Just cv
 getCoVar_maybe _            = Nothing
 
 multToCo :: Mult -> Coercion
 multToCo r = mkNomReflCo r
+
+
+
+-- ! FLAG (+todo-2) -> Familiarise self with the coercion types here (i.e. AppCo, CoVarCo, etc.).
+-- ! I think my guide should have these 
+
 
 -- first result has role equal to input; third result is Nominal
 splitAppCo_maybe :: Coercion -> Maybe (Coercion, Coercion)
@@ -629,6 +671,10 @@ eqTyConRole tc
   = Representational
   | otherwise
   = pprPanic "eqTyConRole: unknown tycon" (ppr tc)
+
+
+-- ! FLAG (+TYPE-annotation-1) -> Yeah thanks for giving a lecture on cycle counting but not
+-- ! on what this magical TYPE thing is. Time to research.
 
 -- | Given a coercion `co :: (t1 :: TYPE r1) ~ (t2 :: TYPE r2)`
 -- produce a coercion `rep_co :: r1 ~ r2`
@@ -789,9 +835,17 @@ mkReflCo :: Role -> Type -> Coercion
 mkReflCo Nominal ty = Refl ty
 mkReflCo r       ty = GRefl r ty MRefl
 
+
+-- !FLAG (+pattern-1) -> I keep seeing this kind of pattern where we have a specialised function impl
+-- ! of some other more general function that was defined shortly earlier. Not clear to me why we aren't just using
+-- ! the previous definition and inlining if performance is a consideration here. Is there a reason for this pattern?
+
 -- | Make a representational reflexive coercion
 mkRepReflCo :: Type -> Coercion
 mkRepReflCo ty = GRefl Representational ty MRefl
+
+
+-- !FLAG (+pattern-1) -> Similar thing here
 
 -- | Make a nominal reflexive coercion
 mkNomReflCo :: Type -> Coercion
@@ -799,6 +853,9 @@ mkNomReflCo = Refl
 
 -- | Apply a type constructor to a list of coercions. It is the
 -- caller's responsibility to get the roles correct on argument coercions.
+
+-- !FLAG (+pattern-2) -> Cute pattern here with destructuring a maybe and testing for just at 
+-- ! at the same time. Reminds me of if let Some(...) = ... in rust.
 mkTyConAppCo :: HasDebugCallStack => Role -> TyCon -> [Coercion] -> Coercion
 mkTyConAppCo r tc cos
   | Just co <- tyConAppFunCo_maybe r tc cos
@@ -855,6 +912,8 @@ mkFunCo2 r afl afr w arg_co res_co
 
 {- Note [No assertion check on mkFunCo]
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+-- !FLAG (+zonking-1) -> The hell is zonking? What is this name?
 We used to have a checkFunCo assertion on mkFunCo, but during typechecking
 we can (legitimately) have not-full-zonked types or coercion variables, so
 the assertion spuriously fails (test T11480b is a case in point).  Lint
@@ -902,6 +961,11 @@ checkFunCo _r afl afr _w arg_co res_co
 -- | Apply a 'Coercion' to another 'Coercion'.
 -- The second coercion must be Nominal, unless the first is Phantom.
 -- If the first is Phantom, then the second can be either Phantom or Nominal.
+
+
+-- !FLAG (+note-3) -> While this is something to dig into deeper later, there are likely invariants
+-- ! embedded here that I need to be careful to respect.
+
 mkAppCo :: Coercion     -- ^ :: t1 ~r t2
         -> Coercion     -- ^ :: s1 ~N s2, where s1 :: k1, s2 :: k2
         -> Coercion     -- ^ :: t1 s1 ~r t2 s2
@@ -1034,6 +1098,8 @@ it's a relatively expensive test and perhaps better done in
 optCoercion.  Not a big deal either way.
 -}
 
+-- !FLAG (+note-4) -> It's applying the type family, and producing a coercion based on the axiom based on the rule that matches. Makes sense.
+
 mkAxInstCo :: Role
            -> CoAxiomRule   -- Always BranchedAxiom or UnbranchedAxiom
            -> [Type] -> [Coercion]
@@ -1063,6 +1129,7 @@ mkAxiomCo :: CoAxiomRule -> [Coercion] -> Coercion
 mkAxiomCo = AxiomCo
 
 -- to be used only with unbranched axioms
+-- !FLAG (+sad-1) -> I think it's quite poor to use assertions in such a inconsistent way here.
 mkUnbranchedAxInstCo :: Role -> CoAxiom Unbranched
                      -> [Type] -> [Coercion] -> Coercion
 mkUnbranchedAxInstCo role ax tys cos
@@ -1136,6 +1203,7 @@ mkSymCo :: Coercion -> Coercion
 -- We want to push the SymCo inside the ForallCo, so that we can instantiate
 -- This can make a big difference.  E.g without coercion optimisation, GHC.Read
 -- totally explodes; but when we push Sym inside ForAll, it's fine.
+-- !FLAG (+sad-2) -> Flimsy.
 mkSymCo co | isReflCo co   = co
 mkSymCo (SymCo co)         = co
 mkSymCo (SubCo (SymCo co)) = SubCo co
@@ -1160,6 +1228,8 @@ mkTransCo co1 co2
 --------------------
 {- Note [mkSelCo precondition]
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+-- !FLAG (+todo-3) -> What is PKTI?
 To satisfy the Purely Kinded Type Invariant (PKTI), we require that
   in any call (mkSelCo cs co)
   * selectFromType cs (coercionLKind co) works
@@ -1253,6 +1323,10 @@ mkSelCo_maybe cs co
        && r == tyConRole (coercionRole co) tc1 n
 
     good_call _ = False
+
+
+-- !FLAG (+todo-4) -> What's this `SelX` stuff and what's it's usefulness here?
+-- ! Is it just a method to parameterise selection?
 
 mkSelCoResRole :: CoSel -> Role -> Role
 -- What is the role of (SelCo cs co), if co has role 'r'?
@@ -1537,6 +1611,8 @@ ltRole Representational _       = False
 ltRole Nominal          Nominal = False
 ltRole Nominal          _       = True
 
+
+-- !FLAG (+role-1) -> A lot of this is just ancient role twiddling stuff
 -------------------------------
 
 -- | like mkKindCo, but aggressively & recursively optimizes to avoid using
@@ -1544,6 +1620,8 @@ ltRole Nominal          _       = True
 promoteCoercion :: HasDebugCallStack => Coercion -> CoercionN
 
 -- First cases handles anything that should yield refl.
+
+-- !FLAG (+note-5) -> Why is this written with a case statement?
 promoteCoercion co = case co of
 
     Refl _ -> mkNomReflCo ki1
@@ -1644,6 +1722,8 @@ promoteCoercion co = case co of
 -- fails if this is not possible, if @g@ coerces between a forall and an ->
 -- or if second parameter has a representational role and can't be used
 -- with an InstCo.
+
+-- !FLAG (+todo-4) -> Figure out what InstCo means here!
 instCoercion :: Pair Type -- g :: lty ~ rty
              -> CoercionN  -- ^  must be nominal
              -> Coercion
@@ -1809,6 +1889,9 @@ instNewTyCon_maybe tc tys
 ************************************************************************
 -}
 
+-- !FLAG (+lambda-calculus-1) -> Seems extremely relevant to the lambda calculus upper bound
+-- ! work that we were considering earlier.
+
 -- | A function to check if we can reduce a type by one step. Used
 -- with 'topNormaliseTypeX'.
 type NormaliseStepper ev = RecTcChecker
@@ -1848,6 +1931,7 @@ unwrapNewTypeStepper :: NormaliseStepper Coercion
 unwrapNewTypeStepper rec_nts tc tys
   | Just (ty', co) <- instNewTyCon_maybe tc tys
   = -- pprTrace "unNS" (ppr tc <+> ppr (getUnique tc) <+> ppr tys $$ ppr ty' $$ ppr rec_nts) $
+    -- !FLAG (+note-6) -> This is the checkRecTc saw earlier
     case checkRecTc rec_nts tc of
       Just rec_nts' -> NS_Step rec_nts' ty' co
       Nothing       -> NS_Abort
@@ -1867,6 +1951,9 @@ unwrapNewTypeStepper rec_nts tc tys
 -- then ty ~ev1~ t1 ~ev2~ t2 ... ~evn~ ty'
 -- and ev = ev1 `plus` ev2 `plus` ... `plus` evn
 -- If it returns Nothing then no newtype unwrapping could happen
+
+-- !FLAG (+lambda-calculus-2) -> This is the main work around the stepper for normalising top-level types. Seems
+-- ! also exceedingly relevant. Except... what is a top-level type in this context compared to a usual type?
 topNormaliseTypeX :: NormaliseStepper ev
                   -> (ev -> ev -> ev)
                   -> Type -> Maybe (ev, Type)
@@ -2483,6 +2570,8 @@ coercionLKind, coercionRKind :: HasDebugCallStack => Coercion -> Type
 coercionLKind co = coercion_lr_kind CLeft  co
 coercionRKind co = coercion_lr_kind CRight co
 
+-- !FLAG (+coercions-1) -> This will probably also need to change for when we add new coercions.
+
 coercion_lr_kind :: HasDebugCallStack => LeftOrRight -> Coercion -> Type
 {-# INLINE coercion_lr_kind #-}
 -- See Note [coercionKind performance]
@@ -2640,6 +2729,8 @@ But this is a *quadratic* algorithm, and the blew up #5631.
 So it's very important to do the substitution simultaneously;
 cf Type.piResultTys (which in fact we call here).
 -}
+
+-- !FLAG (+coercions-2) -> Similarly, his will probably also need to change for when we add new coercions.
 
 -- | Retrieve the role from a coercion.
 coercionRole :: Coercion -> Role
