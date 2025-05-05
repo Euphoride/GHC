@@ -971,7 +971,7 @@ isMatchableTyCon tc role = isInjectiveTyCon tc role && isGenerativeTyCon tc role
 -- !FLAG -> What role here?
 matchMatchable :: [Type] -> TcM ClsInstResult
 matchMatchable [ty] = case (tcSplitTyConApp_maybe ty) of
-  Just (tycon, _) | isMatchableTyCon tycon Nominal ->
+  Just (tycon, _) | isMatchableTyCon tycon Representational ->
       return $ OneInst { cir_new_theta = []
                        , cir_mk_ev = \_ -> evCoercion (mkNomReflCo ty)
                        , cir_canonical = EvCanonical

@@ -402,8 +402,8 @@ can_eq_nc rewritten _rdr_env _envs ienvs ev eq_rel ty1 _ ty2 _
   , let role = eqRelRole eq_rel
         -- For concrete TyCons, we can determine matchability statically
         -- For abstract TyCons, we'll emit Matchable constraints
-        matchTy1 = isMatchableTyCon tc1 role
-        matchTy2 = isMatchableTyCon tc2 role
+        matchTy1 = not (isTypeFamilyTyCon tc1)
+        matchTy2 = not (isTypeFamilyTyCon tc2)
         both_matchable = matchTy1 && matchTy2
 
         -- Emit Matchable constraints for abstract TyCons

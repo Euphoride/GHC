@@ -80,7 +80,6 @@ import GHC.Tc.Utils.TcType
 import GHC.Tc.Solver
 import GHC.Tc.TyCl
 import GHC.Tc.Instance.Typeable ( mkTypeableBinds )
-import GHC.Tc.Instance.Matchable ( mkMatchableBinds )
 import GHC.Tc.Utils.Backpack
 import GHC.Tc.Zonk.TcType
 
