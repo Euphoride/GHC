@@ -39,6 +39,8 @@ module GHC.Internal.Types (
         -- * Type equality
         type (~), type (~~), Coercible,
 
+        Matchable,
+
         -- * Representation polymorphism
         TYPE, CONSTRAINT,
         Levity(..), RuntimeRep(..),
@@ -649,6 +651,12 @@ infix 4 ~, ~~
 class Coercible (a :: k) (b :: k)
   -- See also Note [The equality types story] in GHC.Builtin.Types.Prim
 
+
+-- | Class for matchable type constructors. This allows the constraint solver
+-- to decompose types like @f a ~ f b@ into @a ~ b@ when @f@ is known to be matchable.
+-- A type constructor is matchable if it is injective and geneerative.
+type Matchable :: (k -> Type) -> Constraint
+class Matchable f where
 {- *********************************************************************
 *                                                                      *
                    Bool, and isTrue#

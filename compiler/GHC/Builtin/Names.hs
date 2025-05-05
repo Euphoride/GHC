@@ -305,6 +305,8 @@ basicKnownKeyNames
         -- MonadFix
         monadFixClassName, mfixName,
 
+        matchableClassName,
+
         -- Arrow stuff
         arrAName, composeAName, firstAName,
         appAName, choiceAName, loopAName,
@@ -575,6 +577,7 @@ gHC_INTERNAL_BASE, gHC_INTERNAL_ENUM,
     gHC_INTERNAL_CONC, gHC_INTERNAL_IO, gHC_INTERNAL_IO_Exception,
     gHC_INTERNAL_ST, gHC_INTERNAL_IX, gHC_INTERNAL_STABLE, gHC_INTERNAL_PTR, gHC_INTERNAL_ERR, gHC_INTERNAL_REAL,
     gHC_INTERNAL_FLOAT, gHC_INTERNAL_TOP_HANDLER, gHC_INTERNAL_SYSTEM_IO, gHC_INTERNAL_DYNAMIC,
+    gHC_INTERNAL_MATCHABLE,
     gHC_INTERNAL_TYPEABLE, gHC_INTERNAL_TYPEABLE_INTERNAL, gHC_INTERNAL_GENERICS,
     gHC_INTERNAL_READ_PREC, gHC_INTERNAL_LEX, gHC_INTERNAL_INT, gHC_INTERNAL_WORD, gHC_INTERNAL_MONAD, gHC_INTERNAL_MONAD_FIX,  gHC_INTERNAL_MONAD_FAIL,
     gHC_INTERNAL_ARROW, gHC_INTERNAL_DESUGAR, gHC_INTERNAL_RANDOM, gHC_INTERNAL_EXTS, gHC_INTERNAL_IS_LIST,
@@ -610,6 +613,7 @@ gHC_INTERNAL_SYSTEM_IO              = mkGhcInternalModule (fsLit "GHC.Internal.S
 gHC_INTERNAL_DYNAMIC                = mkGhcInternalModule (fsLit "GHC.Internal.Data.Dynamic")
 gHC_INTERNAL_TYPEABLE               = mkGhcInternalModule (fsLit "GHC.Internal.Data.Typeable")
 gHC_INTERNAL_TYPEABLE_INTERNAL      = mkGhcInternalModule (fsLit "GHC.Internal.Data.Typeable.Internal")
+gHC_INTERNAL_MATCHABLE              = mkGhcInternalModule (fsLit "GHC.Internal.Types")
 gHC_INTERNAL_DATA_DATA              = mkGhcInternalModule (fsLit "GHC.Internal.Data.Data")
 gHC_INTERNAL_READ_PREC              = mkGhcInternalModule (fsLit "GHC.Internal.Text.ParserCombinators.ReadPrec")
 gHC_INTERNAL_LEX                    = mkGhcInternalModule (fsLit "GHC.Internal.Text.Read.Lex")
@@ -1380,6 +1384,11 @@ typeCharTypeRepName   = varQual gHC_INTERNAL_TYPEABLE_INTERNAL (fsLit "typeCharT
 -- See Note [Grand plan for Typeable] in GHC.Tc.Instance.Typeable.
 trGhcPrimModuleName   = varQual gHC_TYPES         (fsLit "tr$ModuleGHCPrim")  trGhcPrimModuleKey
 
+
+matchableClassName :: Name
+matchableClassName = clsQual gHC_INTERNAL_MATCHABLE (fsLit "Matchable") matchableClassKey
+
+
 -- Typeable KindReps for some common cases
 starKindRepName, starArrStarKindRepName,
   starArrStarArrStarKindRepName, constraintKindRepName :: Name
@@ -1787,6 +1796,9 @@ ipClassKey = mkPreludeClassUnique 49
 -- Overloaded record fields
 hasFieldClassNameKey :: Unique
 hasFieldClassNameKey = mkPreludeClassUnique 50
+
+matchableClassKey :: Unique
+matchableClassKey = mkPreludeClassUnique 51
 
 
 ---------------- Template Haskell -------------------

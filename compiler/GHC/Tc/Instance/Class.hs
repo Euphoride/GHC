@@ -5,7 +5,9 @@ module GHC.Tc.Instance.Class (
      ClsInstResult(..),
      InstanceWhat(..), safeOverlap, instanceReturnsDictCon,
      AssocInstInfo(..), isNotAssociated,
-     lookupHasFieldLabel
+     lookupHasFieldLabel,
+     matchMatchable,
+     isMatchableTyCon
   ) where
 
 import GHC.Prelude
@@ -149,6 +151,7 @@ matchGlobalInst dflags short_cut clas tys mb_loc
   | cls_name == knownCharClassName     = matchKnownChar   dflags short_cut clas tys
   | isCTupleClass clas                 = matchCTuple                       clas tys
   | cls_name == typeableClassName      = matchTypeable                     clas tys
+  | cls_name == matchableClassName     = matchMatchable                         tys
   | cls_name == withDictClassName      = matchWithDict                          tys
   | cls_name == dataToTagClassName     = matchDataToTag                    clas tys
   | cls_name == hasFieldClassName      = matchHasField    dflags short_cut clas tys mb_loc
@@ -956,9 +959,25 @@ matchDataToTag _ _ = pure NoInstance
 
 {- ********************************************************************
 *                                                                     *
-                   Class lookup for Typeable
+                Class lookup for Typeable & Matchable
 *                                                                     *
 ***********************************************************************-}
+
+
+-- !FLAG -> very bad. we assume nominal always. fix this. 
+isMatchableTyCon :: TyCon -> Role -> Bool
+isMatchableTyCon tc role = isInjectiveTyCon tc role && isGenerativeTyCon tc role
+
+-- !FLAG -> What role here?
+matchMatchable :: [Type] -> TcM ClsInstResult
+matchMatchable [ty] = case (tcSplitTyConApp_maybe ty) of
+  Just (tycon, _) | isMatchableTyCon tycon Nominal ->
+      return $ OneInst { cir_new_theta = []
+                       , cir_mk_ev = \_ -> evCoercion (mkNomReflCo ty)
+                       , cir_canonical = EvCanonical
+                       , cir_what = BuiltinInstance }
+  _ -> return NoInstance
+matchMatchable _    = return NoInstance
 
 -- | Assumes that we've checked that this is the 'Typeable' class,
 -- and it was applied to the correct argument.

@@ -465,6 +465,7 @@ instance Diagnostic TcRnMessage where
                 2 (ppr what)
            , hang (text "This makes type inference for inner bindings fragile;")
                 2 (text "either use MonoLocalBinds, or simplify it using the instance") ]
+    -- !FLAG -> Disable this check.
     TcRnArityMismatch thing thing_arity nb_args
       -> mkSimpleDecorated $
            hsep [ text "The" <+> what, quotes (ppr $ getName thing), text "should have"

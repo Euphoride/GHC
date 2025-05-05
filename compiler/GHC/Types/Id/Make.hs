@@ -472,7 +472,12 @@ Therefore there is no loss of generality if we make all selectors unrestricted.
 
 -}
 
-mkDictSelId :: Name          -- Name of one of the *value* selectors
+
+-- ! FLAG -> Fascinating how "value selector" as a term occurs only once in the
+-- code base, here, with no definition. Splendid work folks.
+
+
+mkDictSelId :: Name          -- Name of one of the *value* selectors 
                              -- (dictionary superclass or method)
             -> Class -> Id
 mkDictSelId name clas

@@ -80,6 +80,7 @@ import GHC.Tc.Utils.TcType
 import GHC.Tc.Solver
 import GHC.Tc.TyCl
 import GHC.Tc.Instance.Typeable ( mkTypeableBinds )
+import GHC.Tc.Instance.Matchable ( mkMatchableBinds )
 import GHC.Tc.Utils.Backpack
 import GHC.Tc.Zonk.TcType
 
@@ -568,7 +569,6 @@ tcRnSrcDecls explicit_mod_hdr export_ies decls
         -- Emit Typeable bindings
       ; tcg_env <- setGblEnv tcg_env $
                    mkTypeableBinds
-
       ; traceTc "Tc9" empty
       ; failIfErrsM    -- Stop now if if there have been errors
                        -- Continuing is a waste of time; and we may get debug
@@ -802,6 +802,7 @@ tcRnHsBootDecls boot_or_sig decls
         ; rejectBootDecls boot_or_sig BootRuleDecls    rule_decls
 
                 -- Typecheck type/class/instance decls
+                
         ; traceTc "Tc2 (boot)" empty
         ; (tcg_env, inst_infos, _deriv_binds, _th_bndrs)
              <- tcTyClsInstDecls tycl_decls deriv_decls def_decls val_binds
