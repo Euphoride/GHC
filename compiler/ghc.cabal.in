@@ -392,6 +392,7 @@ Library
         GHC.Core.Opt.Simplify.Inline
         GHC.Core.Opt.Simplify.Iteration
         GHC.Core.Opt.Simplify.Monad
+        GHC.Core.Opt.RemoveMatchable
         GHC.Core.Opt.Simplify.Utils
         GHC.Core.Opt.SpecConstr
         GHC.Core.Opt.Specialise

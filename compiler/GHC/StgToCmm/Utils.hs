@@ -60,7 +60,7 @@ import GHC.Cmm
 import GHC.Cmm.BlockId
 import GHC.Cmm.Graph as CmmGraph
 import GHC.Platform.Regs
-import GHC.Cmm.CLabel
+import GHC.Cmm.CLabel hiding ( CmmLabelInfo(..) )
 import GHC.Cmm.Utils
 import GHC.Cmm.Switch
 import {-# SOURCE #-} GHC.StgToCmm.Foreign (emitPrimCall)

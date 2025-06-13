@@ -6,7 +6,7 @@ module GHC.Cmm.InitFini
 
 import GHC.Prelude
 
-import GHC.Cmm.CLabel
+import GHC.Cmm.CLabel hiding ( CmmLabelInfo(..) )
 import GHC.Cmm
 import GHC.Utils.Panic
 import GHC.Utils.Outputable

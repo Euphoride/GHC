@@ -30,7 +30,7 @@ module GHC.CmmToAsm.Dwarf.Types
 import GHC.Prelude
 
 import GHC.Cmm.DebugBlock
-import GHC.Cmm.CLabel
+import GHC.Cmm.CLabel hiding ( CmmLabelInfo(..) )
 import GHC.Cmm.Expr
 import GHC.Utils.Encoding
 import GHC.Data.FastString

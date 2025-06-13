@@ -4,7 +4,7 @@ module GHC.CmmToAsm.RV64.Ppr (pprNatCmmDecl, pprInstr) where
 
 import GHC.Cmm hiding (topInfoTable)
 import GHC.Cmm.BlockId
-import GHC.Cmm.CLabel
+import GHC.Cmm.CLabel hiding ( CmmLabelInfo(..) )
 import GHC.Cmm.Dataflow.Label
 import GHC.CmmToAsm.Config
 import GHC.CmmToAsm.Format

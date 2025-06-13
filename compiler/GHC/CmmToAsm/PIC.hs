@@ -62,7 +62,7 @@ import GHC.CmmToAsm.Types
 
 import GHC.Cmm.Dataflow.Label
 import GHC.Cmm
-import GHC.Cmm.CLabel
+import GHC.Cmm.CLabel hiding ( CmmLabelInfo(..) )
 import GHC.Cmm.Utils (cmmLoadBWord)
 
 import GHC.Types.Basic

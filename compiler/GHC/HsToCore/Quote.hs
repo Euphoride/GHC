@@ -52,9 +52,10 @@ import GHC.Core.Class
 import GHC.Core.DataCon
 import GHC.Core.TyCon
 import GHC.Core
-import GHC.Core.Type( pattern ManyTy, mkFunTy )
+import GHC.Core.Type( pattern ManyTy, mkFunTy, typeKind )
 import GHC.Core.Make
 import GHC.Core.Utils
+import GHC.Core.TyCo.Rep ( templateMatchabilityVar )
 
 import GHC.Builtin.Names
 import GHC.Builtin.Names.TH
@@ -114,12 +115,15 @@ data MetaWrappers = MetaWrappers {
 -- | Construct the functions which will apply the relevant part of the
 -- QuoteWrapper to identifiers during desugaring.
 mkMetaWrappers :: QuoteWrapper -> DsM MetaWrappers
-mkMetaWrappers q@(QuoteWrapper quote_var_raw m_var) = do
+mkMetaWrappers q@(QuoteWrapper quote_var_raw matchable_ev m_var) = do
       let quote_var = Var quote_var_raw
       -- Get the superclass selector to select the Monad dictionary, going
       -- to be used to construct the monadWrapper.
       quote_tc <- dsLookupTyCon quoteClassName
       monad_tc <- dsLookupTyCon monadClassName
+
+      matchable_tc <- dsLookupTyCon matchableClassName
+
       let cls = expectJust $ tyConClass_maybe quote_tc
           monad_cls = expectJust $ tyConClass_maybe monad_tc
           -- Quote m -> Monad m
@@ -129,7 +133,7 @@ mkMetaWrappers q@(QuoteWrapper quote_var_raw m_var) = do
           -- the expected type
           tyvars = dataConUserTyVarBinders (classDataCon cls)
           expected_ty = mkInvisForAllTys tyvars $
-                        mkFunTy invisArgConstraintLike ManyTy
+                        mkFunTy invisArgConstraintLike ManyTy matchableDataConTy
                                 (mkClassPred cls (mkTyVarTys (binderVars tyvars)))
                                 (mkClassPred monad_cls (mkTyVarTys (binderVars tyvars)))
 
@@ -138,7 +142,7 @@ mkMetaWrappers q@(QuoteWrapper quote_var_raw m_var) = do
       let m_ty = Type m_var
           -- Construct the contents of MetaWrappers
           quoteWrapper = applyQuoteWrapper q
-          monadWrapper = mkWpEvApps [EvExpr $ mkCoreApps (Var monad_sel) [m_ty, quote_var]] <.>
+          monadWrapper = mkWpEvApps [EvExpr $ mkCoreApps (Var monad_sel) [m_ty, Var matchable_ev, quote_var]] <.>
                             mkWpTyApps [m_var]
           tyWrapper t = mkAppTy m_var t
           debug = (quoteWrapper, monadWrapper, m_var)
@@ -1157,26 +1161,26 @@ rep_sccFun nm (Just (L _ str)) loc = do
   return [(loc, scc)]
 
 repInline :: InlineSpec -> MetaM (Core TH.Inline)
-repInline (NoInline          _ )   = dataCon noInlineDataConName
+repInline (NoInline          _ )   = dataCon'' noInlineDataConName
 -- There is a mismatch between the TH and GHC representation because
 -- OPAQUE pragmas can't have phase activation annotations (which is
 -- enforced by the TH API), therefore they are desugared to OpaqueP rather than
 -- InlineP, see special case in rep_inline.
 repInline (Opaque            _ )   = panic "repInline: Opaque"
-repInline (Inline            _ )   = dataCon inlineDataConName
-repInline (Inlinable         _ )   = dataCon inlinableDataConName
+repInline (Inline            _ )   = dataCon'' inlineDataConName
+repInline (Inlinable         _ )   = dataCon'' inlinableDataConName
 repInline NoUserInlinePrag        = notHandled ThNoUserInline
 
 repRuleMatch :: RuleMatchInfo -> MetaM (Core TH.RuleMatch)
-repRuleMatch ConLike = dataCon conLikeDataConName
-repRuleMatch FunLike = dataCon funLikeDataConName
+repRuleMatch ConLike = dataCon'' conLikeDataConName
+repRuleMatch FunLike = dataCon'' funLikeDataConName
 
 repPhases :: Activation -> MetaM (Core TH.Phases)
 repPhases (ActiveBefore _ i) = do { MkC arg <- coreIntLit i
-                                  ; dataCon' beforePhaseDataConName [arg] }
+                                  ; dataCon''' beforePhaseDataConName [arg] }
 repPhases (ActiveAfter _ i)  = do { MkC arg <- coreIntLit i
-                                  ; dataCon' fromPhaseDataConName [arg] }
-repPhases _                  = dataCon allPhasesDataConName
+                                  ; dataCon''' fromPhaseDataConName [arg] }
+repPhases _                  = dataCon'' allPhasesDataConName
 
 rep_complete_sig :: [LocatedN Name]
                  -> Maybe (LocatedN Name)
@@ -2417,12 +2421,12 @@ rep2X lift_dsm get_wrap n xs = do
   ; return (MkC $ (foldl' App (wrap (Var rep_id)) xs)) }
 
 
-dataCon' :: Name -> [CoreExpr] -> MetaM (Core a)
-dataCon' n args = do { id <- lift $ dsLookupDataCon n
+dataCon''' :: Name -> [CoreExpr] -> MetaM (Core a)
+dataCon''' n args = do { id <- lift $ dsLookupDataCon n
                      ; return $ MkC $ mkCoreConApps id args }
 
-dataCon :: Name -> MetaM (Core a)
-dataCon n = dataCon' n []
+dataCon'' :: Name -> MetaM (Core a)
+dataCon'' n = dataCon''' n []
 
 
 -- %*********************************************************************
@@ -2739,11 +2743,11 @@ repOverlap mb =
     Just o ->
       case o of
         NoOverlap _    -> nothing
-        Overlappable _ -> just =<< dataCon overlappableDataConName
-        Overlapping _  -> just =<< dataCon overlappingDataConName
-        Overlaps _     -> just =<< dataCon overlapsDataConName
-        Incoherent _   -> just =<< dataCon incoherentDataConName
-        NonCanonical _ -> just =<< dataCon incoherentDataConName
+        Overlappable _ -> just =<< dataCon'' overlappableDataConName
+        Overlapping _  -> just =<< dataCon'' overlappingDataConName
+        Overlaps _     -> just =<< dataCon'' overlapsDataConName
+        Incoherent _   -> just =<< dataCon'' incoherentDataConName
+        NonCanonical _ -> just =<< dataCon'' incoherentDataConName
   where
   nothing = coreNothing overlapTyConName
   just    = coreJust overlapTyConName
@@ -2751,9 +2755,9 @@ repOverlap mb =
 
 repNamespaceSpecifier :: NamespaceSpecifier -> MetaM (Core (TH.NamespaceSpecifier))
 repNamespaceSpecifier ns_spec = case ns_spec of
-  NoNamespaceSpecifier{} -> dataCon noNamespaceSpecifierDataConName
-  TypeNamespaceSpecifier{} -> dataCon typeNamespaceSpecifierDataConName
-  DataNamespaceSpecifier{} -> dataCon dataNamespaceSpecifierDataConName
+  NoNamespaceSpecifier{} -> dataCon'' noNamespaceSpecifierDataConName
+  TypeNamespaceSpecifier{} -> dataCon'' typeNamespaceSpecifierDataConName
+  DataNamespaceSpecifier{} -> dataCon'' dataNamespaceSpecifierDataConName
 
 repClass :: Core (M TH.Cxt) -> Core TH.Name -> Core [(M (TH.TyVarBndr TH.BndrVis))]
          -> Core [TH.FunDep] -> Core [(M TH.Dec)]

@@ -442,7 +442,7 @@ deriving instance Lift Info
 -- | @since template-haskell-2.22.1.0
 deriving instance Lift AnnLookup
 -- | @since template-haskell-2.22.1.0
-deriving instance Lift Extension
+-- deriving instance Lift Extension
 
 -----------------------------------------------------
 --

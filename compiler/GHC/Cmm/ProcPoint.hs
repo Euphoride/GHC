@@ -12,7 +12,7 @@ where
 import GHC.Prelude hiding (last, unzip, succ, zip)
 
 import GHC.Cmm.BlockId
-import GHC.Cmm.CLabel
+import GHC.Cmm.CLabel hiding ( CmmLabelInfo(..) )
 import GHC.Cmm
 import GHC.Cmm.Utils
 import GHC.Cmm.Info

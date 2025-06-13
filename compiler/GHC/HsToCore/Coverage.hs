@@ -19,7 +19,8 @@ import GHC.Platform
 import GHC.Data.FastString
 import GHC.Data.SizedSeq
 
-import GHC.Cmm.CLabel
+import GHC.Cmm.CLabel hiding ( CmmLabelInfo(..) )
+
 
 import GHC.Utils.Misc
 import GHC.Utils.Panic

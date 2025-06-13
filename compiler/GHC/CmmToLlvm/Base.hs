@@ -45,7 +45,7 @@ import GHC.CmmToLlvm.Regs
 import GHC.CmmToLlvm.Config
 import GHC.CmmToLlvm.Version
 
-import GHC.Cmm.CLabel
+import GHC.Cmm.CLabel hiding ( CmmLabelInfo(..) )
 import GHC.Platform.Regs ( activeStgRegs, globalRegMaybe )
 import GHC.Driver.DynFlags
 import GHC.Data.FastString

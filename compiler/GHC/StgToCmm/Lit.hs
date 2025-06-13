@@ -19,7 +19,7 @@ import GHC.Platform
 import GHC.StgToCmm.Monad
 import GHC.StgToCmm.Env
 import GHC.Cmm
-import GHC.Cmm.CLabel
+import GHC.Cmm.CLabel hiding ( CmmLabelInfo(..) )
 import GHC.Cmm.Utils
 
 import GHC.Types.Literal

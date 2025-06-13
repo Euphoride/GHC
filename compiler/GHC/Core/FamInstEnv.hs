@@ -1474,17 +1474,18 @@ normalise_type ty
            ; return $ mkReflRedn r ty }
     go (AppTy ty1 ty2) = go_app_tys ty1 [ty2]
 
-    go (FunTy { ft_af = vis, ft_mult = w, ft_arg = ty1, ft_res = ty2 })
-      = do { arg_redn <- go ty1
+    go (FunTy { ft_af = vis, ft_mult = w, ft_arg = ty1, ft_res = ty2, ft_mat = m })
+      = do { r <- getRole
+           ; arg_redn <- go ty1
            ; res_redn <- go ty2
            ; w_redn <- withRole Nominal $ go w
-           ; r <- getRole
-           ; return $ mkFunRedn r vis w_redn arg_redn res_redn }
+           ; m_redn <- withRole Nominal $ go m
+           ; return $ mkFunRedn r vis w_redn m_redn arg_redn res_redn }
     go (ForAllTy (Bndr tcvar vis) ty)
       = do { (lc', tv', k_redn) <- normalise_var_bndr tcvar
            ; redn <- withLC lc' $ normalise_type ty
            ; return $ mkForAllRedn vis tv' k_redn redn }
-    go (TyVarTy tv)    = normalise_tyvar tv
+    go (TyVarTy tv m)    = normalise_tyvar tv m
     go (CastTy ty co)
       = do { redn <- go ty
            ; lc <- getLC
@@ -1545,12 +1546,12 @@ normalise_args fun_ki roles args
     normalise1 role ty
       = withRole role $ normalise_type ty
 
-normalise_tyvar :: TyVar -> NormM Reduction
-normalise_tyvar tv
+normalise_tyvar :: TyVar -> Matchability -> NormM Reduction
+normalise_tyvar tv m
   = assert (isTyVar tv) $
     do { lc <- getLC
        ; r  <- getRole
-       ; return $ case liftCoSubstTyVar lc r tv of
+       ; return $ case liftCoSubstTyVar lc r tv m of
            Just co -> coercionRedn co
            Nothing -> mkReflRedn r (mkTyVarTy tv) }
 

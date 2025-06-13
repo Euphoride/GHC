@@ -24,7 +24,7 @@ import GHC.Cmm
 import GHC.Cmm.Utils
 import GHC.Cmm.Dataflow.Block
 import GHC.Cmm.Opt           ( cmmMachOpFold )
-import GHC.Cmm.CLabel
+import GHC.Cmm.CLabel hiding ( CmmLabelInfo(..) )
 import GHC.Data.FastString
 import GHC.Unit
 import Control.Monad.Trans.Reader

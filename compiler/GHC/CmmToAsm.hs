@@ -98,7 +98,7 @@ import GHC.StgToCmm.CgUtils ( fixStgRegisters )
 import GHC.Cmm
 import GHC.Cmm.Dataflow.Label
 import GHC.Cmm.GenericOpt
-import GHC.Cmm.CLabel
+import GHC.Cmm.CLabel hiding ( CmmLabelInfo(..) )
 
 import GHC.Types.Unique.FM
 import GHC.Types.Unique.DSM

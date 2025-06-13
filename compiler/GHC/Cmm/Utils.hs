@@ -73,7 +73,7 @@ import GHC.Platform
 import GHC.Runtime.Heap.Layout
 import GHC.Cmm
 import GHC.Cmm.BlockId
-import GHC.Cmm.CLabel
+import GHC.Cmm.CLabel hiding ( CmmLabelInfo(..) )
 import GHC.Utils.Outputable
 import GHC.Utils.Panic
 import GHC.Types.Unique

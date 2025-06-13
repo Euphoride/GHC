@@ -48,7 +48,7 @@ import qualified GHC.StgToCmm.Monad as F
 import GHC.StgToCmm.Monad (FCode, newUnique)
 
 import GHC.Cmm
-import GHC.Cmm.CLabel
+import GHC.Cmm.CLabel hiding ( CmmLabelInfo(..) )
 import GHC.Cmm.Graph
 
 import GHC.Cmm.BlockId

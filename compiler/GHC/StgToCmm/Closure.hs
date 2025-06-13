@@ -80,7 +80,7 @@ import GHC.StgToCmm.Sequel
 
 import GHC.Types.CostCentre
 import GHC.Cmm.BlockId
-import GHC.Cmm.CLabel
+import GHC.Cmm.CLabel hiding ( CmmLabelInfo(..) )
 import GHC.Types.Id
 import GHC.Types.Id.Info
 import GHC.Core.DataCon
@@ -930,7 +930,7 @@ getTyDescription :: Type -> String
 getTyDescription ty
   = case (tcSplitSigmaTy ty) of { (_, _, tau_ty) ->
     case tau_ty of
-      TyVarTy _              -> "*"
+      TyVarTy _ _             -> "*"
       AppTy fun _            -> getTyDescription fun
       TyConApp tycon _       -> getOccString tycon
       FunTy {}              -> '-' : fun_result tau_ty

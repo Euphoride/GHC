@@ -129,7 +129,7 @@ import GHC.Stg.Syntax
 import GHC.Cmm.Expr
 import GHC.Cmm.Graph
 import GHC.Cmm.Utils
-import GHC.Cmm.CLabel
+import GHC.Cmm.CLabel hiding ( CmmLabelInfo(..) )
 import GHC.Runtime.Heap.Layout
 
 

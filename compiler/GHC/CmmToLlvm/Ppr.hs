@@ -14,7 +14,7 @@ import GHC.CmmToLlvm.Base
 import GHC.CmmToLlvm.Data
 import GHC.CmmToLlvm.Config
 
-import GHC.Cmm.CLabel
+import GHC.Cmm.CLabel hiding ( CmmLabelInfo(..) )
 import GHC.Cmm
 
 import GHC.Data.FastString

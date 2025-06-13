@@ -53,6 +53,16 @@ import Data.Char
 import GHC.StgToCmm.Config (stgToCmmPlatform)
 import GHC.StgToCmm.TagCheck (checkConArgsStatic, checkConArgsDyn)
 import GHC.Utils.Outputable
+import GHC.Unit.Types (rtsUnit)
+import GHC.Data.FastString (fsLit)
+
+import GHC.Core.TyCon (tyConClass_maybe)
+import GHC.Core.Class (Class(..))
+
+import GHC.Builtin.Names (matchableClassName)
+import GHC.Cmm.Expr (CmmExpr(..), CmmLit(..))
+import GHC.Cmm.CLabel (mkCmmClosureLabel)
+
 
 ---------------------------------------------------------------
 --      Top-level constructors
@@ -163,6 +173,7 @@ buildDynCon :: Id                 -- Name of the thing to which this constr will
             -> [NonVoid StgArg]   -- Its args
             -> FCode (CgIdInfo, FCode CmmAGraph)
                -- Return details about how to find it and initialization code
+
 buildDynCon binder mn actually_bound cc con args
     = do cfg <- getStgToCmmConfig
          --   pprTrace "noCodeLocal:" (ppr (binder,con,args,cgInfo)) True
@@ -189,6 +200,16 @@ the addr modes of the args is that we may be in a "knot", and
 premature looking at the args will cause the compiler to black-hole!
 -}
 -------- buildDynCon': the general case -----------
+
+buildDynCon' binder mn actually_bound ccs con args
+  | Just cls <- tyConClass_maybe (dataConTyCon con)
+  , className cls == matchableClassName
+  = do { platform <- getPlatform
+       ; let label = mkCmmClosureLabel rtsUnitId (fsLit "stg_MATCHABLE_DICT_closure")
+       ; return (litIdInfo platform binder (mkConLFInfo con) 
+                          (CmmLabel label), 
+                 return mkNop)
+       }
 buildDynCon' binder mn actually_bound ccs con args
   = do  { (id_info, reg) <- rhsIdInfo binder lf_info
         ; return (id_info, gen_code reg)

@@ -10,7 +10,7 @@ module GHC.Cmm.BlockId
 
 import GHC.Prelude
 
-import GHC.Cmm.CLabel
+import GHC.Cmm.CLabel hiding ( CmmLabelInfo(..) )
 import GHC.Data.FastString
 import GHC.Types.Id.Info
 import GHC.Types.Name

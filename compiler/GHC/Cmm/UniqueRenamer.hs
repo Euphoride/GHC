@@ -16,7 +16,7 @@ import GHC.Utils.Monad.State.Strict
 import Data.Tuple (swap)
 import GHC.Word
 import GHC.Cmm
-import GHC.Cmm.CLabel
+import GHC.Cmm.CLabel hiding ( CmmLabelInfo(..) )
 import GHC.Cmm.Dataflow.Block
 import GHC.Cmm.Dataflow.Graph
 import GHC.Cmm.Dataflow.Label

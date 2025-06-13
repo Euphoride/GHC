@@ -20,7 +20,7 @@ module GHC.Cmm.Node (
 import GHC.Prelude hiding (succ)
 
 import GHC.Platform.Regs
-import GHC.Cmm.CLabel
+import GHC.Cmm.CLabel hiding ( CmmLabelInfo(..) )
 import GHC.Cmm.Expr
 import GHC.Cmm.Switch
 import GHC.Data.FastString

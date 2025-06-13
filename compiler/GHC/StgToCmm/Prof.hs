@@ -41,7 +41,8 @@ import GHC.Runtime.Heap.Layout
 import GHC.Cmm.Graph
 import GHC.Cmm
 import GHC.Cmm.Utils
-import GHC.Cmm.CLabel
+import GHC.Cmm.CLabel hiding ( CmmLabelInfo(..) )
+
 
 import GHC.Types.Unique.DSM
 import GHC.Types.CostCentre

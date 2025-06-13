@@ -34,7 +34,7 @@ import GHC.CmmToAsm.Ppr
 import GHC.Cmm              hiding (topInfoTable)
 import GHC.Cmm.Dataflow.Label
 import GHC.Cmm.BlockId
-import GHC.Cmm.CLabel
+import GHC.Cmm.CLabel hiding ( CmmLabelInfo(..) )
 import GHC.Cmm.DebugBlock (pprUnwindTable)
 
 import GHC.Types.Basic (Alignment, mkAlignment, alignmentBytes)

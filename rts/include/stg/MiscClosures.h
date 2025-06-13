@@ -281,6 +281,9 @@ RTS_RET(stg_noforceIO);
 
 /* standard selector thunks */
 
+RTS_ENTRY(stg_MATCHABLE_DICT);
+RTS_CLOSURE(stg_MATCHABLE_DICT_closure);
+
 RTS_ENTRY(stg_sel_0_upd);
 RTS_ENTRY(stg_sel_1_upd);
 RTS_ENTRY(stg_sel_2_upd);

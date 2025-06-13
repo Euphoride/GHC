@@ -38,7 +38,7 @@ import GHC.Cmm
 import GHC.Unit         ( rtsUnit )
 import GHC.Core.Type    ( Type, tyConAppTyCon_maybe )
 import GHC.Core.TyCon
-import GHC.Cmm.CLabel
+import GHC.Cmm.CLabel hiding ( CmmLabelInfo(..) )
 import GHC.Cmm.Info     ( closureInfoPtr )
 import GHC.Cmm.Utils
 import GHC.Builtin.PrimOps

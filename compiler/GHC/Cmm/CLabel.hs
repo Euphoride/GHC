@@ -139,8 +139,10 @@ module GHC.Cmm.CLabel (
         CStubLabel (..),
         cStubLabel,
         fromCStubLabel,
-        mapInternalNonDetUniques
-    ) where
+        mapInternalNonDetUniques,
+
+        CmmLabelInfo(..)   
+  ) where
 
 import GHC.Prelude
 

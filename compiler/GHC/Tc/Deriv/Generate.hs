@@ -39,7 +39,8 @@ module GHC.Tc.Deriv.Generate (
 
         getPossibleDataCons,
         DerivInstTys(..), buildDataConInstArgEnv,
-        derivDataConInstArgTys, substDerivInstTys, zonkDerivInstTys
+        derivDataConInstArgTys, substDerivInstTys, zonkDerivInstTys,
+        nlHsAppType
     ) where
 
 import GHC.Prelude

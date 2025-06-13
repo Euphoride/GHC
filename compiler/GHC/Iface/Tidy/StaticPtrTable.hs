@@ -136,7 +136,7 @@ import GHC.Core.DataCon
 import GHC.Core.Make (mkStringExprFSWith,MkStringIds(..))
 import GHC.Core.Type
 
-import GHC.Cmm.CLabel
+import GHC.Cmm.CLabel hiding ( CmmLabelInfo(..) )
 
 import GHC.Unit.Module
 import GHC.Utils.Outputable as Outputable

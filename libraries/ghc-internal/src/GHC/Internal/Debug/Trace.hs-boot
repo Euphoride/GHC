@@ -2,6 +2,7 @@
 {-# LANGUAGE MagicHash #-}
 {-# LANGUAGE NoImplicitPrelude #-}
 {-# LANGUAGE UnboxedTuples #-}
+{-# LANGUAGE ExplicitForAll #-}
 
 -- This boot file is necessary to allow GHC developers to
 -- use trace facilities in those (relatively few) modules that GHC.Internal.Debug.Trace
@@ -53,9 +54,9 @@ traceShow :: Show a => a -> b -> b
 
 traceShowId :: Show a => a -> a
 
-traceM :: Applicative f => String -> f ()
+traceM :: (Matchable f, Applicative f) => String -> f ()
 
-traceShowM :: (Show a, Applicative f) => a -> f ()
+traceShowM :: forall a f. (Matchable f, Show a, Applicative f) => a -> f ()
 
 traceStack :: String -> a -> a
 

@@ -75,7 +75,7 @@ import GHC.StgToCmm.Closure
 import GHC.StgToCmm.Sequel
 import GHC.Cmm.Graph as CmmGraph
 import GHC.Cmm.BlockId
-import GHC.Cmm.CLabel
+import GHC.Cmm.CLabel hiding ( CmmLabelInfo(..) )
 import GHC.Runtime.Heap.Layout
 import GHC.Unit
 import GHC.Types.Id

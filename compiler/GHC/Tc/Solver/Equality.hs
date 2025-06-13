@@ -62,7 +62,7 @@ import GHC.Utils.Monad
 import GHC.Data.Pair
 import GHC.Data.Bag
 import Control.Monad
-import Data.Maybe ( isJust, isNothing )
+import Data.Maybe ( isJust, isNothing, fromMaybe )
 import Data.List  ( zip4, nubBy, intersperse )
 import Data.Function ( on )
 
@@ -168,9 +168,9 @@ zonkEqTypes ev eq_rel ty1 ty2
                     Right ty  -> canEqReflexive ev eq_rel ty }
   where
     go :: TcType -> TcType -> TcS (Either (Pair TcType) TcType)
-    go (TyVarTy tv1) (TyVarTy tv2) = tyvar_tyvar tv1 tv2
-    go (TyVarTy tv1) ty2           = tyvar NotSwapped tv1 ty2
-    go ty1 (TyVarTy tv2)           = tyvar IsSwapped  tv2 ty1
+    go (TyVarTy tv1 m) (TyVarTy tv2 m') = tyvar_tyvar tv1 tv2 m m'
+    go (TyVarTy tv1 m) ty2           = tyvar NotSwapped tv1 ty2 m
+    go ty1 (TyVarTy tv2 m)           = tyvar IsSwapped  tv2 ty1 m
 
     -- We handle FunTys explicitly here despite the fact that they could also be
     -- treated as an application. Why? Well, for one it's cheaper to just look
@@ -179,12 +179,13 @@ zonkEqTypes ev eq_rel ty1 ty2
     -- so we may run into an unzonked type variable while trying to compute the
     -- RuntimeReps of the argument and result types. This can be observed in
     -- testcase tc269.
-    go (FunTy af1 w1 arg1 res1) (FunTy af2 w2 arg2 res2)
+    go (FunTy af1 w1 m1 arg1 res1) (FunTy af2 w2 m2 arg2 res2)
       | af1 == af2
       , eqType w1 w2
-      = do { res_a <- go arg1 arg2
+      = do { -- res_m <- go m1 m2
+           ; res_a <- go arg1 arg2
            ; res_b <- go res1 res2
-           ; return $ combine_rev (FunTy af1 w1) res_b res_a }
+           ; return $ combine_rev (FunTy af1 w1 m1) res_b res_a }
 
     go ty1@(FunTy {}) ty2 = bale_out ty1 ty2
     go ty1 ty2@(FunTy {}) = bale_out ty1 ty2
@@ -219,11 +220,11 @@ zonkEqTypes ev eq_rel ty1 ty2
     bale_out ty1 ty2 = return $ Left (Pair ty1 ty2)
 
     tyvar :: SwapFlag -> TcTyVar -> TcType
-          -> TcS (Either (Pair TcType) TcType)
+          -> Matchability -> TcS (Either (Pair TcType) TcType)
       -- Try to do as little as possible, as anything we do here is redundant
       -- with rewriting. In particular, no need to zonk kinds. That's why
       -- we don't use the already-defined zonking functions
-    tyvar swapped tv ty
+    tyvar swapped tv ty m
       = case tcTyVarDetails tv of
           MetaTv { mtv_ref = ref }
             -> do { cts <- readTcRef ref
@@ -235,26 +236,26 @@ zonkEqTypes ev eq_rel ty1 ty2
       where
         give_up = return $ Left $ unSwap swapped Pair (mkTyVarTy tv) ty
 
-    tyvar_tyvar tv1 tv2
+    tyvar_tyvar tv1 tv2 m1 m2
       | tv1 == tv2 = return (Right (mkTyVarTy tv1))
-      | otherwise  = do { (ty1', progress1) <- quick_zonk tv1
-                        ; (ty2', progress2) <- quick_zonk tv2
+      | otherwise  = do { (ty1', progress1) <- quick_zonk tv1 m1
+                        ; (ty2', progress2) <- quick_zonk tv2 m2
                         ; if progress1 || progress2
                           then go ty1' ty2'
-                          else return $ Left (Pair (TyVarTy tv1) (TyVarTy tv2)) }
+                          else return $ Left (Pair (TyVarTy tv1 m1) (TyVarTy tv2 m2)) }
 
     trace_indirect tv ty
        = traceTcS "Following filled tyvar (zonk_eq_types)"
                   (ppr tv <+> equals <+> ppr ty)
 
-    quick_zonk tv = case tcTyVarDetails tv of
+    quick_zonk tv m = case tcTyVarDetails tv of
       MetaTv { mtv_ref = ref }
         -> do { cts <- readTcRef ref
               ; case cts of
-                  Flexi        -> return (TyVarTy tv, False)
+                  Flexi        -> return (TyVarTy tv m, False)
                   Indirect ty' -> do { trace_indirect tv ty'
                                      ; return (ty', True) } }
-      _ -> return (TyVarTy tv, False)
+      _ -> return (TyVarTy tv m, False)
 
       -- This happens for type families, too. But recall that failure
       -- here just means to try harder, so it's OK if the type function
@@ -272,7 +273,6 @@ zonkEqTypes ev eq_rel ty1 ty2
     combine_results = bimap (fmap reverse) reverse .
                       foldl' (combine_rev (:)) (Right [])
 
-      -- combine (in reverse) a new result onto an already-combined result
     combine_rev :: (a -> b -> c)
                 -> Either (Pair b) b
                 -> Either (Pair a) a
@@ -281,6 +281,28 @@ zonkEqTypes ev eq_rel ty1 ty2
     combine_rev f (Left list) (Right ty) = Left (f <$> pure ty <*> list)
     combine_rev f (Right tys) (Left elt) = Left (f <$> elt     <*> pure tys)
     combine_rev f (Right tys) (Right ty) = Right (f ty tys)
+
+    combine_rev3 :: (a -> b -> c -> d)
+                -> Either (Pair c) c
+                -> Either (Pair b) b
+                -> Either (Pair a) a
+                -> Either (Pair d) d
+    combine_rev3 f (Left list_c) (Left list_b) (Left list_a) = 
+        Left (f <$> list_a <*> list_b <*> list_c)
+    combine_rev3 f (Left list_c) (Left list_b) (Right val_a) = 
+        Left (f <$> pure val_a <*> list_b <*> list_c)
+    combine_rev3 f (Left list_c) (Right val_b) (Left list_a) = 
+        Left (f <$> list_a <*> pure val_b <*> list_c)
+    combine_rev3 f (Left list_c) (Right val_b) (Right val_a) = 
+        Left (f <$> pure val_a <*> pure val_b <*> list_c)
+    combine_rev3 f (Right val_c) (Left list_b) (Left list_a) = 
+        Left (f <$> list_a <*> list_b <*> pure val_c)
+    combine_rev3 f (Right val_c) (Left list_b) (Right val_a) = 
+        Left (f <$> pure val_a <*> list_b <*> pure val_c)
+    combine_rev3 f (Right val_c) (Right val_b) (Left list_a) = 
+        Left (f <$> list_a <*> pure val_b <*> pure val_c)
+    combine_rev3 f (Right val_c) (Right val_b) (Right val_a) = 
+        Right (f val_a val_b val_c)
 
 
 {- *********************************************************************
@@ -292,14 +314,15 @@ zonkEqTypes ev eq_rel ty1 ty2
 -- !FLAG -> Remove instenv stuff because we don't need it anymore
 -- !FLAG -> Also can we find a better way to implement the below?
 -- | Emit a Matchable constraint for an abstract TyCon
-emitMatchableConstraint :: Class -> CtEvidence -> TyCon -> TcS ()
-emitMatchableConstraint matchable_class ev tc
+emitMatchableConstraint :: Class -> CtEvidence -> Type -> TcS ()
+emitMatchableConstraint matchable_class ev ty
+  | isWanted ev 
   = do { let loc = ctEvLoc ev
-             pred = mkClassPred matchable_class [mkTyConTy tc]
-       ; if isWanted ev
-         then do { (new_ev, _co) <- newWantedEq loc emptyRewriterSet Nominal pred pred
-                 ; emitWorkNC [CtWanted (new_ev)] }
-         else return () }
+             pred = mkClassPred matchable_class [typeKind ty, ty]
+       ; new_ev <- newWantedNC loc emptyRewriterSet pred
+       ; traceTcS "Predicate emitted for matchability: " (ppr pred <+> ppr ty)
+       ; emitWorkNC [CtWanted (new_ev)] }
+  | otherwise = return ()
   
 
 canonicaliseEquality
@@ -316,7 +339,7 @@ canonicaliseEquality ev eq_rel ty1 ty2
                  vcat [ ppr ev, ppr eq_rel, ppr ty1, ppr ty2 ]
                ; rdr_env   <- getGlobalRdrEnvTcS
                ; fam_insts <- getFamInstEnvs
-               ; cls_insts <- getInstEnvs         -- ! FLAG as class inst thingies
+               ; cls_insts <- getInstEnvs         -- ! FLAG as class inst thingies -> nuke me
                ; can_eq_nc False rdr_env fam_insts cls_insts ev eq_rel ty1 ty1 ty2 ty2 }
 
 can_eq_nc
@@ -380,17 +403,13 @@ can_eq_nc _rewritten _rdr_env _envs _ienvs ev eq_rel ty1@(LitTy l1) _ (LitTy l2)
 
 -- Decompose FunTy: (s -> t) and (c => t)
 -- NB: don't decompose (Int -> blah) ~ (Show a => blah)
-
-
--- !FLAG -> whats the difference between cannonicalised and uncannonicalised types
 can_eq_nc _rewritten _rdr_env _envs _ienvs ev eq_rel
-           ty1@(FunTy { ft_mult = am1, ft_af = af1, ft_arg = ty1a, ft_res = ty1b }) _ps_ty1
-           ty2@(FunTy { ft_mult = am2, ft_af = af2, ft_arg = ty2a, ft_res = ty2b }) _ps_ty2
+           ty1@(FunTy { ft_mult = am1, ft_af = af1, ft_arg = ty1a, ft_res = ty1b, ft_mat = m1 }) _ps_ty1
+           ty2@(FunTy { ft_mult = am2, ft_af = af2, ft_arg = ty2a, ft_res = ty2b, ft_mat = m2 }) _ps_ty2
   | af1 == af2  -- See Note [Decomposing FunTy]
-  = canDecomposableFunTy ev eq_rel af1 (ty1,am1,ty1a,ty1b) (ty2,am2,ty2a,ty2b)
+  = canDecomposableFunTy ev eq_rel af1 (ty1,am1,m1,ty1a,ty1b) (ty2,am2,m2,ty2a,ty2b)
 
 
--- !FLAG -> Edit here for tycon applications
 -- Decompose type constructor applications
 -- NB: we have expanded type synonyms already
 can_eq_nc rewritten _rdr_env _envs ienvs ev eq_rel ty1 _ ty2 _
@@ -400,45 +419,50 @@ can_eq_nc rewritten _rdr_env _envs ienvs ev eq_rel ty1 _ ty2 _
    -- here for better error messages rather than decomposing into AppTys;
    -- hence not using a direct match on TyConApp
   , let role = eqRelRole eq_rel
-        -- For concrete TyCons, we can determine matchability statically
-        -- For abstract TyCons, we'll emit Matchable constraints
-        matchTy1 = not (isTypeFamilyTyCon tc1)
-        matchTy2 = not (isTypeFamilyTyCon tc2)
-        both_matchable = matchTy1 && matchTy2
-
-        -- Emit Matchable constraints for abstract TyCons
-        need_matchable_tc1 = isAbstractTyCon tc1
-        need_matchable_tc2 = isAbstractTyCon tc2
-     
         both_generative = isGenerativeTyCon tc1 role && isGenerativeTyCon tc2 role
-  , both_matchable && (rewritten || both_generative)        -- ! FLAG -> This is probably subtly wrong
-  -- Check both type constructors with isMatchableTyCon separately
-  -- If a TyCon is abstract, emit a Matchable constraint
-  = do { matchable_class <- tcLookupClass matchableClassName       
-       ;        ; when need_matchable_tc1 $
-           emitMatchableConstraint matchable_class ev tc1
-           
-       ; when need_matchable_tc2 $
-           emitMatchableConstraint matchable_class ev tc2
-
-       ; canTyConApp ev eq_rel both_generative (ty1,tc1,tys1) (ty2,tc2,tys2) }
+  , not (isTypeFamilyTyCon tc1) && not (isTypeFamilyTyCon tc2)     
+  , rewritten || both_generative
+  = canTyConApp ev eq_rel both_generative (ty1,tc1,tys1) (ty2,tc2,tys2)
 
 can_eq_nc _rewritten _rdr_env _envs _ienvs ev eq_rel
            s1@ForAllTy{} _
            s2@ForAllTy{} _
   = can_eq_nc_forall ev eq_rel s1 s2
 
+-- Maybe a = TyConApp (Maybe) (a)
+-- foo :: forall a b . (Maybe a ~ Maybe b) => a -> b
+
+
 -- See Note [Canonicalising type applications] about why we require rewritten types
 -- Use tcSplitAppTy, not matching on AppTy, to catch oversaturated type families
 -- NB: Only decompose AppTy for nominal equality.
 --     See Note [Decomposing AppTy equalities]
+-- !FLAG -> Decomposing AppTy now needs Matchable(!) constraints :D
 can_eq_nc True _rdr_env _envs _ienvs ev NomEq ty1 _ ty2 _
   | Just (t1, s1) <- tcSplitAppTy_maybe ty1
   , Just (t2, s2) <- tcSplitAppTy_maybe ty2
-  = can_eq_app ev t1 s1 t2 s2
+  = do { matchable_class <- tcLookupClass matchableClassName       
+       ; traceTcS "can_eq_nc: Decomposing types " (ppr ty1 $$ ppr ty2 $$ ppr t1 $$ ppr t2)
+       ; unless ((t1 `eqType` t2 && s1 `eqType` s2) || isWanted ev) $ do {
+            traceTcS "can_eq_nc: Emitting Matchable constraint for type " (ppr t1)
+          ; emitMatchableConstraint matchable_class ev t1 }
+       ; unless ((t1 `eqType` t2 && s1 `eqType` s2) || isWanted ev) $ do {
+            traceTcS "can_eq_nc: Emitting Matchable constraint for type " (ppr t2)
+          ; emitMatchableConstraint matchable_class ev t2 }
+
+       ; can_eq_app ev t1 s1 t2 s2 }
+
+-- dMatchable_a38U
+-- dMatchable_a38T
+
+-- data Matchability = Matchable | Unmatchable 
+-- type (->) :: * -> * -> Matchability -> Type
 
 
+-- foo :: forall f a b . (f a ~ f b) => a -> b
+-- foo = id
 
+-- forall m .
 -------------------
 -- Can't decompose.
 -------------------
@@ -784,6 +808,7 @@ can_eq_newtype_nc rdr_env envs ienvs ev swapped ty1 ((gres, co1), ty1') ty2 ps_t
 -- ^ Decompose a type application.
 -- All input types must be rewritten. See Note [Canonicalising type applications]
 -- Nominal equality only!
+-- !FLAG -> Need to change this too
 can_eq_app :: CtEvidence       -- :: s1 t1 ~N s2 t2
            -> Xi -> Xi         -- s1 t1
            -> Xi -> Xi         -- s2 t2
@@ -869,7 +894,7 @@ canTyConApp :: CtEvidence -> EqRel
 -- Neither tc1 nor tc2 is a saturated funTyCon, nor a type family
 -- But they can be data families.
 
--- ! yeah except now they can be
+-- ! FLAG -> I think this needs to be changed too
 canTyConApp ev eq_rel both_generative (ty1,tc1,tys1) (ty2,tc2,tys2)
   | tc1 == tc2
   , tys1 `equalLength` tys2
@@ -1422,10 +1447,10 @@ canDecomposableTyConAppOK ev eq_rel tc (ty1,tys1) (ty2,tys2)
                ++ repeat loc
 
 canDecomposableFunTy :: CtEvidence -> EqRel -> FunTyFlag
-                     -> (Type,Type,Type,Type)   -- (fun_ty,multiplicity,arg,res)
-                     -> (Type,Type,Type,Type)   -- (fun_ty,multiplicity,arg,res)
+                     -> (Type,Type,Type,Type,Type)   -- (fun_ty,multiplicity,arg,res)
+                     -> (Type,Type,Type,Type,Type)   -- (fun_ty,multiplicity,arg,res)
                      -> TcS (StopOrContinue a)
-canDecomposableFunTy ev eq_rel af f1@(ty1,m1,a1,r1) f2@(ty2,m2,a2,r2)
+canDecomposableFunTy ev eq_rel af f1@(ty1,m1,m1',a1,r1) f2@(ty2,m2,m2',a2,r2)
   = do { traceTcS "canDecomposableFunTy"
                   (ppr ev $$ ppr eq_rel $$ ppr f1 $$ ppr f2)
        ; case ev of
@@ -1433,10 +1458,13 @@ canDecomposableFunTy ev eq_rel af f1@(ty1,m1,a1,r1) f2@(ty2,m2,a2,r2)
              -> do { (co, _, _) <- wrapUnifierTcS ev Nominal $ \ uenv ->
                         do { let mult_env = uenv `updUEnvLoc` toInvisibleLoc
                                                  `setUEnvRole` funRole role SelMult
+                                 mat_env = uenv `updUEnvLoc` toInvisibleLoc
+                                                 `setUEnvRole` funRole role SelMat
                            ; mult <- uType mult_env m1 m2
                            ; arg  <- uType (uenv `setUEnvRole` funRole role SelArg) a1 a2
                            ; res  <- uType (uenv `setUEnvRole` funRole role SelRes) r1 r2
-                           ; return (mkNakedFunCo role af mult arg res) }
+                           ; mat <- uType mat_env m1' m2'
+                           ; return (mkNakedFunCo role af mult mat arg res) }
                    ; setWantedEq dest co }
 
            CtGiven (GivenCt { ctev_evar = evar })
@@ -1447,7 +1475,7 @@ canDecomposableFunTy ev eq_rel af f1@(ty1,m1,a1,r1) f2@(ty2,m2,a2,r2)
                    --           See the call to canonicaliseEquality in solveEquality.
              -> emitNewGivens loc
                        [ (funRole role fs, mkSelCo (SelFun fs) ev_co)
-                       | fs <- [SelMult, SelArg, SelRes] ]
+                       | fs <- [SelMult, SelMat, SelArg, SelRes] ]
 
     ; stopWith ev "Decomposed TyConApp" }
 

@@ -30,7 +30,7 @@ import GHC.Types.ForeignStubs
 import GHC.Unit.Module
 import GHC.Core.Coercion
 
-import GHC.Cmm.CLabel
+import GHC.Cmm.CLabel hiding ( CmmLabelInfo(..) )
 import GHC.Types.ForeignCall
 import GHC.Types.SrcLoc
 import GHC.Utils.Outputable

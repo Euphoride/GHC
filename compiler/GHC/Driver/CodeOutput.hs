@@ -25,8 +25,7 @@ import GHC.CmmToLlvm    ( llvmCodeGen )
 import GHC.CmmToC           ( cmmToC )
 import GHC.Cmm.Lint         ( cmmLint )
 import GHC.Cmm
-import GHC.Cmm.CLabel
-
+import GHC.Cmm.CLabel hiding ( CmmLabelInfo(..) )
 import GHC.StgToCmm.CgUtils (CgStream)
 
 import GHC.Driver.DynFlags

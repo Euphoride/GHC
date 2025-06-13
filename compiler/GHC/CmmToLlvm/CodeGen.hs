@@ -17,7 +17,7 @@ import GHC.CmmToLlvm.Config
 import GHC.CmmToLlvm.Regs
 
 import GHC.Cmm.BlockId
-import GHC.Cmm.CLabel
+import GHC.Cmm.CLabel hiding ( CmmLabelInfo(..) )
 import GHC.Cmm
 import GHC.Cmm.Utils
 import GHC.Cmm.Switch

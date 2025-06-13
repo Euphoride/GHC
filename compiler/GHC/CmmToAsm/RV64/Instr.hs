@@ -8,7 +8,7 @@ module GHC.CmmToAsm.RV64.Instr where
 import Data.Maybe
 import GHC.Cmm
 import GHC.Cmm.BlockId
-import GHC.Cmm.CLabel
+import GHC.Cmm.CLabel hiding ( CmmLabelInfo(..) )
 import GHC.Cmm.Dataflow.Label
 import GHC.CmmToAsm.Config
 import GHC.CmmToAsm.Format

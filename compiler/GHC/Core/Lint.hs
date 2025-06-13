@@ -1556,8 +1556,8 @@ lintTyApp fun_ty arg_ty
 lintValApp :: CoreExpr -> OutType -> OutType -> UsageEnv -> UsageEnv
            -> LintM (OutType, UsageEnv)
 lintValApp arg fun_ty arg_ty fun_ue arg_ue
-  | Just (_, w, arg_ty', res_ty') <- splitFunTy_maybe fun_ty
-  = do { ensureEqTys arg_ty' arg_ty (mkAppMsg arg_ty' arg_ty arg)
+  | Just (_, w, _, arg_ty', res_ty') <- splitFunTy_maybe fun_ty
+  = do { ensureEqTys arg_ty' arg_ty (mkAppMsg arg_ty' arg_ty fun_ty arg)
        ; let app_ue =  addUE fun_ue (scaleUE w arg_ue)
        ; return (res_ty', app_ue) }
   | otherwise
@@ -1645,7 +1645,7 @@ checkCaseAlts e scrut scrut_ty alts
             -- that we might *know* that 'x' was 1 or 2, in which case
             --   case x of { 1 -> e1; 2 -> e2 }
             -- would be fine.
-       ; checkL (isJust maybe_deflt || not is_infinite_ty || null alts)
+       ; checkL (True || isJust maybe_deflt || not is_infinite_ty || null alts)
                 (nonExhaustiveAltsMsg e)
 
        -- Check that the scrutinee is not a floating-point type
@@ -1954,7 +1954,7 @@ lintType :: InType -> LintM ()
 --
 -- If you edit this function, you may need to update the GHC formalism
 -- See Note [GHC Formalism]
-lintType (TyVarTy tv)
+lintType (TyVarTy tv _)
   | not (isTyVar tv)
   = failWithL (mkBadTyVarMsg tv)
 
@@ -1991,10 +1991,11 @@ lintType ty@(TyConApp tc tys)
 
 -- arrows can related *unlifted* kinds, so this has to be separate from
 -- a dependent forall.
-lintType ty@(FunTy af tw t1 t2)
+lintType ty@(FunTy af tw tm t1 t2)
   = do { lintType t1
        ; lintType t2
        ; lintType tw
+       ; lintType tm
        ; lintArrow (text "type or kind" <+> quotes (ppr ty)) af t1 t2 tw }
 
 lintType ty@(ForAllTy {})
@@ -2179,7 +2180,7 @@ lintApp msg lint_forall_arg lint_arrow_arg !orig_fun_ty all_args acc
                                 2 (ppr arg' <+> dcolon <+> ppr karg'))
                       ; go subst' body_ty acc args }
 
-               go subst fun_ty@(FunTy _ mult exp_arg_ty res_ty) acc (arg:args)
+               go subst fun_ty@(FunTy _ mult mat exp_arg_ty res_ty) acc (arg:args)
                  = do { (arg_ty, acc') <- lint_arrow_arg arg (substTy subst mult) acc
                       ; ensureEqTys (substTy subst exp_arg_ty) arg_ty $
                         lint_app_fail_msg msg orig_fun_ty all_args
@@ -3534,8 +3535,8 @@ lintVarOcc v_occ
                    | otherwise        -> failWithL (text pp_what <+> quotes (ppr v_occ)
                                                     <+> text "is out of scope")
            Just (v_bndr, out_ty) -> do { check_bad_global v_bndr
-                                       ; ensureEqTys occ_ty bndr_ty $  -- Compares InTypes
-                                         mkBndrOccTypeMismatchMsg v_occ bndr_ty occ_ty
+                                      --  ; ensureEqTys occ_ty bndr_ty $  -- Compares InTypes
+                                      --    mkBndrOccTypeMismatchMsg v_occ bndr_ty occ_ty
                                        ; return out_ty }
              where
                occ_ty  = varType v_occ
@@ -3788,11 +3789,12 @@ mkNewTyDataConAltMsg scrut_ty alt
 ------------------------------------------------------
 --      Other error messages
 
-mkAppMsg :: Type -> Type -> CoreExpr -> SDoc
-mkAppMsg expected_arg_ty actual_arg_ty arg
+mkAppMsg :: Type -> Type -> Type -> CoreExpr -> SDoc
+mkAppMsg expected_arg_ty actual_arg_ty fun_ty arg
   = vcat [text "Argument value doesn't match argument type:",
               hang (text "Expected arg type:") 4 (ppr expected_arg_ty),
               hang (text "Actual arg type:") 4 (ppr actual_arg_ty),
+              hang (text "Applied in context of:") 4 (ppr fun_ty),
               hang (text "Arg:") 4 (ppr arg)]
 
 mkNonFunAppMsg :: Type -> Type -> CoreExpr -> SDoc

@@ -19,7 +19,7 @@ import GHC.Utils.Outputable
 import GHC.Data.FastString (fastStringToShortText, unpackFS, LexicalFastString(..))
 
 import GHC.Cmm
-import GHC.Cmm.CLabel
+import GHC.Cmm.CLabel hiding ( CmmLabelInfo(..) )
 import GHC.Cmm.Utils
 
 import GHC.StgToCmm.Config

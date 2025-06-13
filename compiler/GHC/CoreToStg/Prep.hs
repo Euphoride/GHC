@@ -73,6 +73,8 @@ import Data.ByteString.Builder.Prim
 import Control.Monad
 import Data.List (intercalate)
 
+import GHC.Core.Opt.RemoveMatchable (updateIdType)
+
 {-
 Note [CorePrep Overview]
 ~~~~~~~~~~~~~~~~~~~~~~~~
@@ -295,12 +297,13 @@ mkDataConWorkers :: Bool -> ModLocation -> [TyCon] -> [CoreBind]
 -- See Note [Data constructor workers]
 -- c.f. Note [Injecting implicit bindings] in GHC.Iface.Tidy
 mkDataConWorkers generate_debug_info mod_loc data_tycons
-  = [ NonRec id (tick_it (getName data_con) (Var id))
+  -- = [ pprTrace "new worker:" (ppr (updateIdType id) <+> ppr data_con) $ NonRec (updateIdType id) (tick_it (getName data_con) (Var (updateIdType id)))
+  = [  NonRec (updateIdType id) (tick_it (getName data_con) (Var (updateIdType id)))
                                 -- The ice is thin here, but it works
-    | tycon <- data_tycons,     -- CorePrep will eta-expand it
-      data_con <- tyConDataCons tycon,
-      let id = dataConWorkId data_con
-    ]
+      | tycon <- data_tycons,     -- CorePrep will eta-expand it
+        data_con <- tyConDataCons tycon,
+        let id = dataConWorkId data_con
+      ]
  where
    -- If we want to generate debug info, we put a source note on the
    -- worker. This is useful, especially for heap profiling.

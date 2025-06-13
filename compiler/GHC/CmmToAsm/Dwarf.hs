@@ -4,7 +4,7 @@ module GHC.CmmToAsm.Dwarf (
 
 import GHC.Prelude
 
-import GHC.Cmm.CLabel
+import GHC.Cmm.CLabel hiding ( CmmLabelInfo(..) )
 import GHC.Cmm.Expr
 import GHC.Data.FastString
 import GHC.Settings.Config ( cProjectName, cProjectVersion )

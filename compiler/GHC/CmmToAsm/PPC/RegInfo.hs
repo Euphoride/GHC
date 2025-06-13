@@ -22,7 +22,7 @@ import GHC.CmmToAsm.PPC.Instr
 
 import GHC.Cmm.BlockId
 import GHC.Cmm
-import GHC.Cmm.CLabel
+import GHC.Cmm.CLabel hiding ( CmmLabelInfo(..) )
 
 import GHC.Types.Unique
 import GHC.Utils.Outputable (ppr, text, Outputable, (<>))

@@ -50,7 +50,7 @@ import GHC.Prelude
 import GHC.Platform
 import GHC.Types.Id
 import GHC.Types.CostCentre
-import GHC.Cmm.CLabel
+import GHC.Cmm.CLabel hiding ( CmmLabelInfo(..) )
 import GHC.Cmm.BlockId
 import GHC.Cmm.Node
 import GHC.Runtime.Heap.Layout

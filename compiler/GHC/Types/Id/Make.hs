@@ -78,7 +78,7 @@ import GHC.Types.Demand
 import GHC.Types.Cpr
 import GHC.Types.Unique.Supply
 import GHC.Types.Basic       hiding ( SuccessFlag(..) )
-import GHC.Types.Var (VarBndr(Bndr), visArgConstraintLike, tyVarName)
+import GHC.Types.Var (VarBndr(Bndr), visArgConstraintLike, tyVarName, setVarType)
 
 import GHC.Tc.Types.Origin
 import GHC.Tc.Utils.TcType as TcType
@@ -94,6 +94,8 @@ import Data.List        ( zipWith4 )
 -- A bit of a shame we must import these here
 import GHC.StgToCmm.Types (LambdaFormInfo(..))
 import GHC.Runtime.Heap.Layout (ArgDescr(ArgUnknown))
+
+import {-# SOURCE #-} GHC.Core.Opt.RemoveMatchable (removeMatchableThetas, transformExpr, scrubId)
 
 {-
 ************************************************************************
@@ -551,7 +553,7 @@ mkDictSelRhs :: Class
              -> Int         -- 0-indexed selector among (superclasses ++ methods)
              -> CoreExpr
 mkDictSelRhs clas val_index
-  = mkLams tyvars (Lam dict_id rhs_body)
+  = mkLams tyvars (Lam dict_id' rhs_body')
   where
     tycon          = classTyCon clas
     new_tycon      = isNewTyCon tycon
@@ -562,7 +564,7 @@ mkDictSelRhs clas val_index
     the_arg_id     = getNth arg_ids val_index
     pred           = mkClassPred clas (mkTyVarTys tyvars)
     dict_id        = mkTemplateLocal 1 pred
-    arg_ids        = mkTemplateLocalsNum 2 (map scaledThing arg_tys)
+    arg_ids        = map scrubId $ mkTemplateLocalsNum 2 (map scaledThing arg_tys)
 
     rhs_body | new_tycon = unwrapNewTypeBody tycon (mkTyVarTys tyvars)
                                                    (Var dict_id)
@@ -570,6 +572,10 @@ mkDictSelRhs clas val_index
                                            arg_ids (varToCoreExpr the_arg_id)
                                 -- varToCoreExpr needed for equality superclass selectors
                                 --   sel a b d = case x of { MkC _ (g:a~b) _ -> CO g }
+    
+    rhs_body' = transformExpr rhs_body
+    dict_id' = scrubId dict_id
+    
 
 dictSelRule :: Int -> Arity -> RuleFun
 -- Tries to persuade the argument to look like a constructor
@@ -814,6 +820,7 @@ mkDataConRep dc_bang_opts fam_envs wrap_name data_con
                         -- Drop the stupid theta arguments, as per
                         -- Note [Instantiating stupid theta] in GHC.Core.DataCon.
 
+      --  ; let wrap_id = pprTrace "new wrapper w/" (ppr data_con <+> ppr wrap_ty <+> ppr wrap_info) $ mkGlobalId (DataConWrapId data_con) wrap_name wrap_ty wrap_info
        ; let wrap_id = mkGlobalId (DataConWrapId data_con) wrap_name wrap_ty wrap_info
              wrap_info = noCafIdInfo
                          `setArityInfo`         wrap_arity
@@ -880,7 +887,10 @@ mkDataConRep dc_bang_opts fam_envs wrap_name data_con
     res_ty_args  = dataConResRepTyArgs data_con
 
     tycon        = dataConTyCon data_con       -- The representation TyCon (not family)
-    wrap_ty      = dataConWrapperType data_con
+    wrap_ty'     = dataConWrapperType data_con
+    (wrap_ty, _) = if isClassTyCon tycon 
+                   then removeMatchableThetas wrap_ty'
+                   else (wrap_ty', 0)
     ev_tys       = eqSpecPreds eq_spec ++ theta
     all_arg_tys  = map unrestricted ev_tys ++ orig_arg_tys
     ev_ibangs    = map (const HsLazy) ev_tys
@@ -1985,7 +1995,7 @@ noinlineConstraintId = pcMiscPrelId noinlineConstraintIdName ty info
   where
     info = noCafIdInfo
     ty   = mkSpecForAllTys [alphaConstraintTyVar] $
-           mkFunTy visArgConstraintLike ManyTy alphaTy alphaConstraintTy
+           mkFunTy visArgConstraintLike ManyTy matchableDataConTy alphaTy alphaConstraintTy
 
 ------------------------------------------------
 nospecId :: Id -- See Note [nospecId magic]
@@ -2048,9 +2058,10 @@ leftSectionId = pcRepPolyId leftSectionName ty concs info
     ty  = mkInfForAllTys  [runtimeRep1TyVar,runtimeRep2TyVar, multiplicityTyVar1] $
           mkSpecForAllTys [openAlphaTyVar,  openBetaTyVar]    $
           exprType body
-    [f,x] = mkTemplateLocals [mkVisFunTy mult openAlphaTy openBetaTy, openAlphaTy]
+    [f,x] = mkTemplateLocals [mkVisFunTy mult (matchableDataConTy) openAlphaTy openBetaTy, openAlphaTy]
 
     mult = mkTyVarTy multiplicityTyVar1 :: Mult
+    -- mat = (mkTyVarTy templateMatchabilityVar) :: Mat
     xmult = setIdMult x mult
 
     rhs  = mkLams [ runtimeRep1TyVar, runtimeRep2TyVar, multiplicityTyVar1

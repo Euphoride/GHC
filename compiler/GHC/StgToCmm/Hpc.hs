@@ -14,7 +14,7 @@ import GHC.Platform
 
 import GHC.Cmm.Graph
 import GHC.Cmm.Expr
-import GHC.Cmm.CLabel
+import GHC.Cmm.CLabel hiding ( CmmLabelInfo(..) )
 import GHC.Cmm.Utils
 
 import GHC.Unit.Module

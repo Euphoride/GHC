@@ -49,7 +49,7 @@ import GHC.Cmm.BlockId
 import GHC.Cmm.Dataflow.Label
 import GHC.Cmm
 import GHC.Cmm.Info
-import GHC.Cmm.CLabel
+import GHC.Cmm.CLabel hiding ( CmmLabelInfo(..) )
 import GHC.Utils.Panic
 import GHC.Platform
 import GHC.Types.Unique.FM (listToUFM, lookupUFM)

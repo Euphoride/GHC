@@ -940,6 +940,11 @@ INFO_TABLE( stg_dummy_ret, 0, 0, CONSTR_NOCAF, "DUMMY_RET", "DUMMY_RET")
 }
 CLOSURE(stg_dummy_ret_closure,stg_dummy_ret);
 
+INFO_TABLE_CONSTR(stg_MATCHABLE_DICT,0,0,0,CONSTR_NOCAF,"MATCHABLE_DICT","MATCHABLE_DICT")
+{ foreign "C" barf("MATCHABLE_DICT object (%p) entered!", R1) never returns; }
+
+CLOSURE(stg_MATCHABLE_DICT_closure, stg_MATCHABLE_DICT);
+
 /* ----------------------------------------------------------------------------
    MVAR_TSO_QUEUE
    ------------------------------------------------------------------------- */

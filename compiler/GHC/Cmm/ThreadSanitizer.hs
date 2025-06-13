@@ -10,7 +10,7 @@ import GHC.Platform
 import GHC.Platform.Regs (activeStgRegs, callerSaves)
 import GHC.Cmm
 import GHC.Cmm.Utils
-import GHC.Cmm.CLabel
+import GHC.Cmm.CLabel hiding ( CmmLabelInfo(..) )
 import GHC.Cmm.Dataflow
 import GHC.Cmm.Dataflow.Block
 import GHC.Cmm.Dataflow.Graph

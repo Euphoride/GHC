@@ -67,7 +67,7 @@ import GHC.Utils.Outputable
 import GHC.Utils.Panic
 import GHC.Platform
 
-import GHC.Cmm.CLabel
+import GHC.Cmm.CLabel hiding ( CmmLabelInfo(..) )
 import GHC.Types.Unique.Set
 import GHC.Types.Unique
 import GHC.Types.Unique.DSM

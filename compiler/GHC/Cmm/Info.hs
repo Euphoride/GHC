@@ -35,7 +35,7 @@ import GHC.Prelude
 
 import GHC.Cmm
 import GHC.Cmm.Utils
-import GHC.Cmm.CLabel
+import GHC.Cmm.CLabel hiding ( CmmLabelInfo(..) )
 import GHC.StgToCmm.CgUtils (CgStream)
 import GHC.Runtime.Heap.Layout
 import GHC.Data.Bitmap

@@ -47,8 +47,7 @@ import GHC.Cmm.BlockId
 import GHC.Cmm
 import GHC.Cmm.Info
 import GHC.Cmm.Utils
-import GHC.Cmm.CLabel
-
+import GHC.Cmm.CLabel hiding ( CmmLabelInfo(..) )
 import GHC.Stg.Utils
 import GHC.Types.CostCentre
 import GHC.Types.Id

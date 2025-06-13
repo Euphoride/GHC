@@ -269,7 +269,7 @@ import GHC.Cmm.Switch     ( mkSwitchTargets )
 import GHC.Cmm.Info
 import GHC.Cmm.BlockId
 import GHC.Cmm.Lexer
-import GHC.Cmm.CLabel
+import GHC.Cmm.CLabel hiding ( CmmLabelInfo(..) )
 import GHC.Cmm.Parser.Config
 import GHC.Cmm.Parser.Monad hiding (getPlatform, getProfile)
 import qualified GHC.Cmm.Parser.Monad as PD

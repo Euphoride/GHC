@@ -32,8 +32,7 @@ import GHC.Cmm hiding (topInfoTable)
 import GHC.Cmm.Dataflow.Label
 
 import GHC.Cmm.BlockId
-import GHC.Cmm.CLabel
-
+import GHC.Cmm.CLabel hiding ( CmmLabelInfo(..) )
 import GHC.Types.Unique ( pprUniqueAlways, getUnique )
 import GHC.Platform
 import GHC.Utils.Outputable

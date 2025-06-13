@@ -58,12 +58,13 @@ import GHC.Types.Id.Info
 import GHC.Types.Basic
 import GHC.Types.Demand ( zapDmdEnvSig )
 import GHC.Types.Name.Ppr
-import GHC.Types.Var ( Var )
+import GHC.Types.Var ( Var(..), setVarType )
 
 import Control.Monad
 import qualified GHC.LanguageExtensions as LangExt
 import GHC.Unit.Module
 
+import GHC.Core.Opt.RemoveMatchable (removeMatchableModGutsPass)
 {-
 ************************************************************************
 *                                                                      *
@@ -199,12 +200,11 @@ getCoreToDo dflags hpt_rule_base extra_vars
     add_late_ccs =
         runWhen (profiling && gopt Opt_ProfLateInlineCcs dflags) $ CoreAddLateCcs
 
-    core_todo =
-     [
     -- We want to do the static argument transform before full laziness as it
     -- may expose extra opportunities to float things outwards. However, to fix
     -- up the output of the transformation we need at do at least one simplify
-    -- after this before anything else
+    -- after this before anything else    
+    core_todo = [CoreDoPluginPass "RemoveMatchable" removeMatchableModGutsPass,
         runWhen static_args (CoreDoPasses [ simpl_gently, CoreDoStaticArgs ]),
 
         -- initial simplify: mk specialiser happy: minimum effort please
@@ -346,8 +346,7 @@ getCoreToDo dflags hpt_rule_base extra_vars
         maybe_rule_check FinalPhase,
 
         add_caller_ccs,
-        add_late_ccs
-     ]
+        add_late_ccs]
 
     -- Remove 'CoreDoNothing' and flatten 'CoreDoPasses' for clarity.
     flatten_todos [] = []
@@ -454,6 +453,8 @@ runCorePasses passes guts
             return guts'
 
     mod = mg_module guts
+
+
 
 doCorePass :: CoreToDo -> ModGuts -> CoreM ModGuts
 doCorePass pass guts = do
@@ -579,3 +580,7 @@ dmdAnal logger before_ww dflags fam_envs rules binds = do
     dumpIdInfoOfProgram (hasPprDebug dflags) (ppr . zapDmdEnvSig . dmdSigInfo) binds_plus_dmds
   -- See Note [Stamp out space leaks in demand analysis] in GHC.Core.Opt.DmdAnal
   seqBinds binds_plus_dmds `seq` return binds_plus_dmds
+
+
+
+

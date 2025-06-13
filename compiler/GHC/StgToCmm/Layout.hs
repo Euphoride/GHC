@@ -46,7 +46,7 @@ import GHC.Cmm.BlockId
 import GHC.Cmm
 import GHC.Cmm.Utils
 import GHC.Cmm.Info
-import GHC.Cmm.CLabel
+import GHC.Cmm.CLabel hiding ( CmmLabelInfo(..) )
 import GHC.Stg.Syntax
 import GHC.Types.Id
 import GHC.Core.TyCon    ( PrimRep(..), PrimOrVoidRep(..), primRepSizeB )

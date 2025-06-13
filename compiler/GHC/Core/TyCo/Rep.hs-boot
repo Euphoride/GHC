@@ -19,6 +19,7 @@ data Scaled a
 scaledThing :: Scaled a -> a
 
 type Mult = Type
+type Mat = Type
 
 type PredType = Type
 type RuntimeRepType = Type

@@ -22,7 +22,7 @@ import GHC.Platform.Regs
 import GHC.Cmm.BlockId
 import GHC.Cmm.Dataflow.Label
 import GHC.Cmm
-import GHC.Cmm.CLabel
+import GHC.Cmm.CLabel hiding ( CmmLabelInfo(..) )
 import GHC.Utils.Outputable
 import GHC.Platform
 import GHC.Types.Unique.DSM

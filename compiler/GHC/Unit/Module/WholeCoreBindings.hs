@@ -5,7 +5,7 @@
 
 module GHC.Unit.Module.WholeCoreBindings where
 
-import GHC.Cmm.CLabel
+import GHC.Cmm.CLabel hiding ( CmmLabelInfo(..) )
 import GHC.Driver.DynFlags (DynFlags (targetPlatform), initSDocContext)
 import GHC.ForeignSrcLang (ForeignSrcLang (..))
 import GHC.Iface.Syntax

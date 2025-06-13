@@ -12,11 +12,11 @@ The @TyCon@ datatype
 
 module GHC.Core.TyCon(
         -- * Main TyCon data types
-        TyCon,
+        TyCon(..),
         AlgTyConRhs(..), visibleDataCons,
         AlgTyConFlav(..), isNoParent,
         FamTyConFlav(..), Role(..), Injectivity(..),
-        PromDataConInfo(..), TyConFlavour(..),
+        PromDataConInfo(..), TyConFlavour(..), TyConDetails(..),
 
         -- * TyConBinder
         TyConBinder, TyConBndrVis(..),

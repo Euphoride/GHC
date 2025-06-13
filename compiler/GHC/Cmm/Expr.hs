@@ -38,7 +38,7 @@ import GHC.Prelude
 
 import GHC.Platform
 import GHC.Cmm.BlockId
-import GHC.Cmm.CLabel
+import GHC.Cmm.CLabel hiding ( CmmLabelInfo(..) )
 import GHC.Cmm.MachOp
 import GHC.Cmm.Type
 import GHC.Cmm.Reg

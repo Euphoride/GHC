@@ -22,7 +22,7 @@ where
 import GHC.Prelude
 
 import GHC.Utils.Asm
-import GHC.Cmm.CLabel
+import GHC.Cmm.CLabel hiding ( CmmLabelInfo(..) )
 import GHC.Cmm
 import GHC.CmmToAsm.Config
 import GHC.Utils.Outputable as SDoc

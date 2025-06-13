@@ -101,6 +101,8 @@ import Data.List        ( sortBy, mapAccumL )
 import qualified Data.Set as S
 import GHC.Types.CostCentre
 
+import GHC.Core.Opt.RemoveMatchable (transformExpr, scrubId)
+
 {-
 Constructing the TypeEnv, Instances, Rules from which the
 ModIface is constructed, and which goes on to subsequent modules in
@@ -410,6 +412,9 @@ tidyProgram opts (ModGuts { mg_module           = mod
                           , mg_boot_exports     = boot_exports
                           }) = do
 
+
+  -- ! Sorry, which genius thought this was at all even remotely good engineering?
+  -- ! how do these binds ENTIRELY skip the simplifier? are you kidding me?
   let implicit_binds = concatMap getImplicitBinds tcs
       all_binds = implicit_binds ++ binds
 
@@ -641,21 +646,22 @@ really just a code generation trick.... binding itself makes no sense.
 See Note [Data constructor workers] in "GHC.CoreToStg.Prep".
 -}
 
+
 getImplicitBinds :: TyCon -> [CoreBind]
 getImplicitBinds tc = cls_binds ++ getTyConImplicitBinds tc
   where
     cls_binds = maybe [] getClassImplicitBinds (tyConClass_maybe tc)
 
+
 getTyConImplicitBinds :: TyCon -> [CoreBind]
 getTyConImplicitBinds tc
-  | isDataTyCon tc = [ NonRec wrap_id rhs
+  | isDataTyCon tc = [ NonRec (scrubId wrap_id) (transformExpr rhs)
                      | dc <- tyConDataCons tc
                      , let wrap_id = dataConWrapId dc
                          -- For data cons with no wrapper, this wrap_id
                          -- is in fact a DataConWorkId, and hence
                          -- dataConWrapUnfolding_maybe returns Nothing
                      , Just rhs <- [dataConWrapUnfolding_maybe wrap_id] ]
-
   | otherwise      = []
     -- The 'otherwise' includes family TyCons of course, but also (less obviously)
     --  * Newtypes: see Note [Compulsory newtype unfolding] in GHC.Types.Id.Make
@@ -663,7 +669,7 @@ getTyConImplicitBinds tc
 
 getClassImplicitBinds :: Class -> [CoreBind]
 getClassImplicitBinds cls
-  = [ NonRec op (mkDictSelRhs cls val_index)
+  = [ NonRec (scrubId op) (transformExpr $ mkDictSelRhs cls val_index)
     | (op, val_index) <- classAllSelIds cls `zip` [0..] ]
 
 {-

@@ -90,6 +90,7 @@ import GHC.Utils.Panic
 import GHC.Utils.Misc
 
 import Data.List ( intersperse, mapAccumL )
+import GHC.Core.TyCo.Rep (Matchability(..))
 
 {-
 ************************************************************************
@@ -1227,7 +1228,7 @@ adjustJoinPointType mult new_res_ty join_id
       , let body_ty' = go (n-1) body_ty
       = case arg_bndr of
           Named b                          -> mkForAllTy b body_ty'
-          Anon (Scaled arg_mult arg_ty) af -> mkFunTy af' arg_mult' arg_ty body_ty'
+          Anon (Scaled arg_mult arg_ty) af -> mkFunTy af' arg_mult' matchableDataConTy arg_ty body_ty'
               where
                 -- Using "!": See Note [Bangs in the Simplifier]
                 -- mkMultMul: see Note [Scaling join point arguments]
@@ -1295,8 +1296,9 @@ mk_full_subst in_scope tv_env cv_env id_env
 substTy :: HasDebugCallStack => SimplEnv -> Type -> Type
 substTy env ty = Type.substTy (getTCvSubst env) ty
 
+-- ! Huh, this is unused...
 substTyVar :: SimplEnv -> TyVar -> Type
-substTyVar env tv = Type.substTyVar (getTCvSubst env) tv
+substTyVar env tv = Type.substTyVar (getTCvSubst env) tv MaybeUnmatchable
 
 substTyVarBndr :: SimplEnv -> TyVar -> (SimplEnv, TyVar)
 substTyVarBndr env tv

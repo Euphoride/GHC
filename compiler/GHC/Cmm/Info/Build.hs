@@ -26,7 +26,7 @@ import GHC.Cmm.Dataflow.Label
 import GHC.Cmm.Dataflow
 import GHC.Unit.Module
 import GHC.Data.Graph.Directed
-import GHC.Cmm.CLabel
+import GHC.Cmm.CLabel hiding ( CmmLabelInfo(..) )
 import GHC.Cmm
 import GHC.Cmm.Utils
 import GHC.Data.Maybe
