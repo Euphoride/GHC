@@ -45,7 +45,7 @@ import GHC.Tc.Module ( runTcInteractive )
 
 import GHC.Core.Type
 import GHC.Core.TyCo.Compare( eqType )
-import GHC.Core.TyCon       ( tyConDataCons )
+import GHC.Core.TyCon       ( tyConDataCons, tyConSingleDataCon )
 import GHC.Core
 import GHC.Core.FVs       ( exprsSomeFreeVarsList, exprFreeVars )
 import GHC.Core.SimpleOpt ( simpleOptPgm, simpleOptExpr )
@@ -99,6 +99,13 @@ import Data.List (partition)
 import Data.IORef
 import Data.Traversable (for)
 import GHC.Iface.Make (mkRecompUsageInfo)
+
+import GHC.Core.TyCo.Rep (KindCoercion, Type(..))
+import GHC.Core.Type (splitCastTy_maybe)
+
+import GHC.Core.Predicate (getClassPredTys_maybe)
+import GHC.Tc.Utils.TcType (TcInvisTVBinder, tcSplitForAllInvisTVBinders, tcSplitPhiTy, mkPhiTy)
+import GHC.Core.Class (Class(..))
 
 {-
 ************************************************************************
@@ -718,11 +725,54 @@ magicDefnsEnv = mkNameEnv magicDefns
 magicDefnModules :: ModuleSet
 magicDefnModules = mkModuleSet $ map (nameModule . getName . fst) magicDefns
 
+
+unwrapAllCasts :: Type -> [KindCoercion] -> (Type, [KindCoercion])
+unwrapAllCasts ty cos = case splitCastTy_maybe ty of 
+  Just (inner_ty, co) -> unwrapAllCasts inner_ty (co : cos)
+  Nothing -> (ty, cos)
+
+
+wrapCasts :: Type -> [KindCoercion] -> Type
+wrapCasts ty [] = ty
+wrapCasts ty (co : cos) = wrapCasts (CastTy ty co) cos
+
+decomp :: Type -> (([TcInvisTVBinder], ThetaType, Type), [KindCoercion])
+decomp ty = 
+  let (bndrs, body) = tcSplitForAllInvisTVBinders ty
+      (body', cos)  = unwrapAllCasts body []
+      (theta, tau)  = tcSplitPhiTy body'
+  in
+    ((bndrs, theta, tau), cos)
+
+collect :: (([TcInvisTVBinder], ThetaType, Type), [KindCoercion]) -> Type
+collect ((bndrs, theta, tau), cos) = let 
+      phi_ty = mkPhiTy theta tau
+      casted = wrapCasts phi_ty cos
+      final_ty = mkInvisForAllTys bndrs casted
+    in
+      final_ty
+
+
+stripMatchableFromType :: Type -> Type
+stripMatchableFromType ty = collect ((tvs, theta', inner), cos)
+  where
+    ((tvs, theta, inner), cos) = decomp ty
+    theta' = filter (not . isMatchableConstraint) theta
+    
+    isMatchableConstraint pred = case getClassPredTys_maybe pred of
+      Just (c, _) -> className c `elem` [matchableClassName, unmatchableClassName]
+      Nothing -> False
+
 mkUnsafeCoercePrimPair :: Id -> CoreExpr -> DsM (Id, CoreExpr)
 -- See Note [Wiring in unsafeCoerce#] for the defn we are creating here
 mkUnsafeCoercePrimPair _old_id old_expr
   = do { unsafe_equality_proof_id <- dsLookupGlobalId unsafeEqualityProofName
        ; unsafe_equality_tc       <- dsLookupTyCon unsafeEqualityTyConName
+       ; matchable_tycon <- dsLookupTyCon matchableClassName
+       ; let matchable_dcon = tyConSingleDataCon matchable_tycon
+       ; let unsafe_equality_proof_id' = 
+               unsafe_equality_proof_id `setIdType` 
+               stripMatchableFromType (idType unsafe_equality_proof_id)
 
        ; let [unsafe_refl_data_con] = tyConDataCons unsafe_equality_tc
 
@@ -744,13 +794,17 @@ mkUnsafeCoercePrimPair _old_id old_expr
                , rr_cv_ty    -- rr_cv :: r1 ~# r2
                , ab_cv_ty    -- ab_cv :: (alpha |> alpha_co ~# beta)
                ]
-
+             
              -- Returns (scrutinee, scrutinee type, type of covar in AltCon)
              unsafe_equality k a b
-               = ( mkTyApps (Var unsafe_equality_proof_id) [k,b,a]
+               = ( mkTyApps (Var unsafe_equality_proof_id') [k,b,a] -- `mkApps` [mbdict, madict]
                  , mkTyConApp unsafe_equality_tc [k,b,a]
                  , mkNomEqPred a b
                  )
+                 where
+                   madict = mkCoreConApps matchable_dcon [Type k, Type a]
+                   mbdict = mkCoreConApps matchable_dcon [Type k, Type b]
+
              -- NB: UnsafeRefl :: (b ~# a) -> UnsafeEquality a b, so we have to
              -- carefully swap the arguments above
 

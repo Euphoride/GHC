@@ -52,9 +52,10 @@ import GHC.Core.Class
 import GHC.Core.DataCon
 import GHC.Core.TyCon
 import GHC.Core
-import GHC.Core.Type( pattern ManyTy, mkFunTy )
+import GHC.Core.Type( pattern ManyTy, mkFunTy, typeKind )
 import GHC.Core.Make
 import GHC.Core.Utils
+import GHC.Core.TyCo.Rep ( templateMatchabilityVar )
 
 import GHC.Builtin.Names
 import GHC.Builtin.Names.TH
@@ -114,12 +115,15 @@ data MetaWrappers = MetaWrappers {
 -- | Construct the functions which will apply the relevant part of the
 -- QuoteWrapper to identifiers during desugaring.
 mkMetaWrappers :: QuoteWrapper -> DsM MetaWrappers
-mkMetaWrappers q@(QuoteWrapper quote_var_raw m_var) = do
+mkMetaWrappers q@(QuoteWrapper quote_var_raw matchable_ev m_var) = do
       let quote_var = Var quote_var_raw
       -- Get the superclass selector to select the Monad dictionary, going
       -- to be used to construct the monadWrapper.
       quote_tc <- dsLookupTyCon quoteClassName
       monad_tc <- dsLookupTyCon monadClassName
+
+      matchable_tc <- dsLookupTyCon matchableClassName
+
       let cls = expectJust $ tyConClass_maybe quote_tc
           monad_cls = expectJust $ tyConClass_maybe monad_tc
           -- Quote m -> Monad m
@@ -129,7 +133,7 @@ mkMetaWrappers q@(QuoteWrapper quote_var_raw m_var) = do
           -- the expected type
           tyvars = dataConUserTyVarBinders (classDataCon cls)
           expected_ty = mkInvisForAllTys tyvars $
-                        mkFunTy invisArgConstraintLike ManyTy
+                        mkFunTy invisArgConstraintLike ManyTy matchableDataConTy
                                 (mkClassPred cls (mkTyVarTys (binderVars tyvars)))
                                 (mkClassPred monad_cls (mkTyVarTys (binderVars tyvars)))
 

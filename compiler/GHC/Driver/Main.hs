@@ -235,7 +235,7 @@ import GHC.Types.Id
 import GHC.Types.SourceError
 import GHC.Types.SafeHaskell
 import GHC.Types.ForeignStubs
-import GHC.Types.Name.Env      ( mkNameEnv )
+import GHC.Types.Name.Env      ( mkNameEnv, lookupNameEnv, mapNameEnv, nonDetNameEnvElts, extendNameEnv, emptyNameEnv)
 import GHC.Types.Var.Env       ( mkEmptyTidyEnv )
 import GHC.Types.Var.Set
 import GHC.Types.Error
@@ -305,11 +305,29 @@ import Data.Bifunctor
 import qualified GHC.Unit.Home.Graph as HUG
 import GHC.Unit.Home.PackageTable
 
+import GHC.Core.TyCo.Rep (KindCoercion, Type(..))
+import GHC.Core.Type (splitCastTy_maybe)
+
+import GHC.Core.Predicate (getClassPredTys_maybe)
+
+import GHC.Core.Class (Class, className)
+import Data.List ((\\))
+
+import GHC.Tc.Types.Evidence (EvBind(..))
+
+import GHC.Core.TyCon as TyCon
+import GHC.Core.Coercion.Axiom (coAxiomName)
+
+
+
 {- **********************************************************************
 %*                                                                      *
                 Initialisation
 %*                                                                      *
 %********************************************************************* -}
+
+ifM :: Monad m => m Bool -> m a -> m a -> m a
+ifM b t f = do b' <- b; if b' then t else f
 
 newHscEnv :: FilePath -> DynFlags -> IO HscEnv
 newHscEnv top_dir dflags = do
@@ -755,13 +773,143 @@ tcRnModule' sum save_rn_syntax mod = do
 
 -- | Convert a typechecked module to Core
 hscDesugar :: HscEnv -> ModSummary -> TcGblEnv -> IO ModGuts
-hscDesugar hsc_env mod_summary tc_result =
-    runHsc hsc_env $ hscDesugar' (ms_location mod_summary) tc_result
+hscDesugar hsc_env mod_summary tc_result = do
+  runHsc hsc_env $ hscDesugar' (ms_location mod_summary) tc_result
+
+
+-- Mini pass to blast matchable/unmatchable ev
+
+unwrapAllCasts :: Type -> [KindCoercion] -> (Type, [KindCoercion])
+unwrapAllCasts ty cos = case splitCastTy_maybe ty of 
+  Just (inner_ty, co) -> unwrapAllCasts inner_ty (co : cos)
+  Nothing -> (ty, cos)
+
+
+wrapCasts :: Type -> [KindCoercion] -> Type
+wrapCasts ty [] = ty
+wrapCasts ty (co : cos) = wrapCasts (CastTy ty co) cos
+
+decomp :: Type -> (([TcInvisTVBinder], ThetaType, Type), [KindCoercion])
+decomp ty = 
+  let (bndrs, body) = tcSplitForAllInvisTVBinders ty
+      (body', cos)  = unwrapAllCasts body []
+      (theta, tau)  = tcSplitPhiTy body'
+  in
+    ((bndrs, theta, tau), cos)
+
+collect :: (([TcInvisTVBinder], ThetaType, Type), [KindCoercion]) -> Type
+collect ((bndrs, theta, tau), cos) = let 
+      phi_ty = mkPhiTy theta tau
+      casted = wrapCasts phi_ty cos
+      final_ty = mkInvisForAllTys bndrs casted
+    in
+      final_ty
+
+
+
+blastMatchabilityEv :: HscEnv -> TcGblEnv -> IO TcGblEnv
+blastMatchabilityEv hsc_env tcg_env = do 
+  pprTrace "BLAST CALLED!" (text "yes") $ do
+    mcls' <- lookupClassName matchableClassName tcg_env hsc_env
+    ucls' <- lookupClassName unmatchableClassName tcg_env hsc_env
+    ifM (return (isNothing mcls')) (return tcg_env) $ do
+    ifM (return (isNothing ucls')) (return tcg_env) $ do
+
+    mcls <- lookupClass $ fromJust mcls'
+    ucls <- lookupClass $ fromJust ucls'
+    
+    let type_env = tcg_type_env tcg_env
+        
+    let rebuild_env env [] = return env
+        rebuild_env env (thing:rest) = do
+          let (name, new_thing) = case thing of
+                AnId id -> pprTrace "IS ID" (ppr $ idName id) $
+                    (idName id, blastClass (mcls, ucls) thing)
+                ATyCon tc -> pprTrace "IS TYCON" (ppr $ TyCon.tyConName tc) $
+                    (TyCon.tyConName tc, thing)
+                AConLike cl -> pprTrace "IS CONLIKE" (ppr $ conLikeName cl) $
+                    (conLikeName cl, thing)
+                ACoAxiom ax -> pprTrace "IS COAXIOM" (ppr $ coAxiomName ax) $
+                    (coAxiomName ax, thing)
+
+          pprTrace "PROCESSING" (ppr name) $ do
+            let env' = extendNameEnv env name new_thing
+            rebuild_env env' rest
+    
+    new_env <- rebuild_env emptyNameEnv (nonDetNameEnvElts type_env)
+    
+    pprTrace "REBUILT ENV SIZE" (ppr $ length $ nonDetNameEnvElts new_env) $
+      return $ tcg_env { tcg_type_env = new_env, tcg_binds = map (updateBindTypes (mcls, ucls)) (tcg_binds tcg_env) }
+  where
+    blastClass :: (Class, Class) -> TyThing -> TyThing
+    blastClass cls (AnId id) = 
+      let name = idName id
+          newId = stripClsFromId cls id
+      in pprTrace "blastClass" (ppr name <+> text ":" <+> ppr (idType id) <+> text "=>" <+> ppr (idType newId)) $
+        AnId newId
+    blastClass _ other = pprTrace "blastClass" (ppr other) $ other
+
+    stripClsFromId cls id = 
+      id `setIdType` stripCls cls (idType id)
+
+    stripCls :: (Class, Class) -> Type -> Type
+    stripCls cls ty = collect ((tvs, theta', inner), cos)
+      where
+        ((tvs, theta, inner), cos) = decomp ty
+        theta' = relevantThetas cls theta
+
+    relevantThetas :: (Class, Class) -> ThetaType -> ThetaType
+    relevantThetas (mcls, ucls) thetas = 
+      let non_class_preds = filter (isNothing . getClassPredTys_maybe) thetas
+          class_preds     = mapMaybe (getClassPredTys_maybe) thetas
+          matching_preds = filter (\(c, _) -> not (className c `elem` [matchableClassName, unmatchableClassName])) class_preds
+          constructed_preds = map (uncurry mkClassPred) matching_preds
+      in constructed_preds ++ non_class_preds
+
+    updateBindTypes :: (Class, Class) -> LHsBind GhcTc -> LHsBind GhcTc  
+    updateBindTypes cls (L l (FunBind ext (L l' id) matches)) = 
+      L l (FunBind ext (L l' (stripClsFromId cls id)) matches)
+    updateBindTypes cls (L l (VarBind x id pat)) = 
+      L l (VarBind x (stripClsFromId cls id) pat)
+    updateBindTypes cls (L l (XHsBindsLR abs@(AbsBinds {}))) = 
+      L l (XHsBindsLR (abs 
+        { abs_ev_vars = map (stripClsFromId cls) (abs_ev_vars abs)
+        , abs_exports = map updateABE (abs_exports abs)
+        , abs_binds = map (updateBindTypes cls) (abs_binds abs)
+        }))
+      where
+        updateABE abe = abe 
+          { abe_poly = stripClsFromId cls (abe_poly abe)
+          , abe_mono = stripClsFromId cls (abe_mono abe)
+          }
+    updateBindTypes _ b = b
+
+      
+lookupClass :: TyThing -> IO Class
+lookupClass thing =     case thing of
+        ATyCon tc | Just cls <- tyConClass_maybe tc -> return cls
+        _                                           -> error "should not happen!"
+
+lookupClassName :: Name -> TcGblEnv -> HscEnv -> IO (Maybe TyThing)
+lookupClassName name env hsc_env
+  = do  { case lookupNameEnv (tcg_type_env env) name of {
+                Just thing -> return $ Just thing;
+                Nothing    ->
+
+          if nameIsLocalOrFrom (tcg_semantic_mod env) name
+          then return Nothing
+          else lookupImported name hsc_env }
+  }
+
+lookupImported :: Name -> HscEnv -> IO (Maybe TyThing)
+lookupImported name hsc_env = lookupType hsc_env name
 
 hscDesugar' :: ModLocation -> TcGblEnv -> Hsc ModGuts
 hscDesugar' mod_location tc_result = do
     hsc_env <- getHscEnv
-    ioMsgMaybe $ hoistDsMessage $
+    -- tc_result' <- liftIO $ blastMatchabilityEv hsc_env tc_result
+
+    ioMsgMaybe $ hoistDsMessage $      
       {-# SCC "deSugar" #-}
       deSugar hsc_env mod_location tc_result
 

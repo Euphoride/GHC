@@ -1472,13 +1472,13 @@ collect_cand_qtvs orig_ty is_dep cur_lvl bound dvs ty
     -- Uses accumulating-parameter style
     go dv (AppTy t1 t2)       = foldlM go dv [t1, t2]
     go dv (TyConApp tc tys)   = go_tc_args dv (tyConBinders tc) tys
-    go dv (FunTy _ w arg res) = foldlM go dv [w, arg, res]
+    go dv (FunTy _ w m arg res) = foldlM go dv [w, m, arg, res]
     go dv (LitTy {})          = return dv
     go dv (CastTy ty co)      = do { dv1 <- go dv ty
                                    ; collect_cand_qtvs_co orig_ty cur_lvl bound dv1 co }
     go dv (CoercionTy co)     = collect_cand_qtvs_co orig_ty cur_lvl bound dv co
 
-    go dv (TyVarTy tv)
+    go dv (TyVarTy tv _)
       | is_bound tv = return dv
       | otherwise   = do { m_contents <- isFilledMetaTyVar_maybe tv
                          ; case m_contents of
@@ -1568,7 +1568,7 @@ collect_cand_qtvs_co orig_ty cur_lvl bound = go_co
                                           ; go_mco dv1 mco }
     go_co dv (TyConAppCo _ _ cos)    = foldlM go_co dv cos
     go_co dv (AppCo co1 co2)         = foldlM go_co dv [co1, co2]
-    go_co dv (FunCo _ _ _ w co1 co2) = foldlM go_co dv [w, co1, co2]
+    go_co dv (FunCo _ _ _ w m co1 co2) = foldlM go_co dv [w,m, co1, co2]
     go_co dv (AxiomCo _ cos)         = foldlM go_co dv cos
     go_co dv (UnivCo { uco_lty = t1, uco_rty = t2, uco_deps = deps })
                                      = do { dv1 <- collect_cand_qtvs orig_ty True cur_lvl bound dv t1
@@ -1884,6 +1884,11 @@ defaultTyVar def_strat tv
   = do { lvl <- getTcLevel
        ; _ <- promoteMetaTyVarTo lvl tv
        ; return True }
+
+  | isMatchabilityVar tv
+  = do {traceTc "Defaulting a Matchability var to 'M" (ppr tv)
+       ; liftZonkM $ writeMetaTyVar tv matchableDataConTy
+       ; return True}
 
   | DefaultKindVars <- def_strat -- -XNoPolyKinds and this is a kind var: we must default it
   = default_kind_var tv

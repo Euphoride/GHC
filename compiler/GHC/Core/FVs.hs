@@ -327,7 +327,7 @@ orphNamesOfTyCon tycon = unitNameSet (getName tycon) `unionNameSet` case tyConCl
 orphNamesOfType :: Type -> NameSet
 orphNamesOfType ty | Just ty' <- coreView ty = orphNamesOfType ty'
                 -- Look through type synonyms (#4912)
-orphNamesOfType (TyVarTy _)          = emptyNameSet
+orphNamesOfType (TyVarTy _ _)          = emptyNameSet
 orphNamesOfType (LitTy {})           = emptyNameSet
 orphNamesOfType (ForAllTy bndr res)  = orphNamesOfType (binderType bndr)
                                        `unionNameSet` orphNamesOfType res
@@ -340,11 +340,12 @@ orphNamesOfType (TyConApp tycon tys) = func
                        arg:_ | tycon == fUNTyCon -> orph_names_of_fun_ty_con arg
                        _ -> emptyNameSet
 
-orphNamesOfType (FunTy af w arg res) =  func
+orphNamesOfType (FunTy af w m arg res) =  func
                                        `unionNameSet` unitNameSet fun_tc
                                        `unionNameSet` orphNamesOfType w
                                        `unionNameSet` orphNamesOfType arg
                                        `unionNameSet` orphNamesOfType res
+                                       `unionNameSet` orphNamesOfType m
         where func | isVisibleFunArg af = orph_names_of_fun_ty_con w
                    | otherwise          = emptyNameSet
 

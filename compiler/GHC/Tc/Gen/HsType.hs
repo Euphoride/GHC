@@ -42,7 +42,10 @@ module GHC.Tc.Gen.HsType (
         tcFamTyPats,
         maybeEtaExpandAlgTyCon, tcbVisibilities,
         etaExpandAlgTyCon,
-
+        
+        inferMatchableThetas,
+        alterClsTvs,
+        elaborateMatchability,
           -- tyvars
         zonkAndScopedSort,
 
@@ -56,7 +59,7 @@ module GHC.Tc.Gen.HsType (
         tcHsLiftedTypeNC, tcHsOpenTypeNC,
         tcInferLHsType, tcInferLHsTypeKind, tcInferLHsTypeUnsaturated,
         tcCheckLHsTypeInContext, tcCheckLHsType,
-        tcHsContext, tcLHsPredType,
+        tcHsContext, tcLHsPredType, quantifyMatchabilites, collectBndrs, runStateM,
 
         kindGeneralizeAll,
 
@@ -138,10 +141,46 @@ import GHC.Data.Bag( unitBag )
 import Data.Function ( on )
 import Data.List.NonEmpty ( NonEmpty(..), nonEmpty )
 import qualified Data.List.NonEmpty as NE
-import Data.List ( mapAccumL )
+import Data.List ( mapAccumL, (\\), nub, nubBy )
 import Control.Monad
 import Data.Tuple( swap )
 import GHC.Types.SourceText
+
+import Control.Arrow (first)
+import GHC.Core.Predicate (getClassPredTys, getClassPredTys_maybe)
+import GHC.Core.Type (isTYPEorCONSTRAINT)
+
+
+newtype StateM s a = StateM (s -> (a, s))
+
+instance Functor (StateM s) where
+  fmap f (StateM g) = StateM $ \s -> let (a, s') = g s in (f a, s')
+
+instance Applicative (StateM s) where
+  pure a = StateM $ \s -> (a, s)
+  StateM f <*> StateM g = StateM $ \s -> 
+    let (fab, s') = f s
+        (a, s'') = g s'
+    in (fab a, s'')
+
+instance Monad (StateM s) where
+  StateM g >>= f = StateM $ \s ->
+    let (a, s') = g s
+        StateM h = f a
+    in h s'
+
+runStateM :: StateM s a -> s -> (a, s)
+runStateM (StateM f) = f
+
+get :: StateM s s
+get = StateM $ \s -> (s, s)
+
+put :: s -> StateM s ()
+put s = StateM $ \_ -> ((), s)
+
+modify :: (s -> s) -> StateM s ()
+modify f = StateM $ \s -> ((), f s)
+
 
 {-
         ----------------------------
@@ -434,6 +473,254 @@ tcClassSigType names sig_ty
     sig_ctxt = funsSigCtxt names
     skol_info_anon = SigTypeSkol sig_ctxt
 
+
+unwrapAllCasts :: Type -> [KindCoercion] -> (Type, [KindCoercion])
+unwrapAllCasts ty cos = case splitCastTy_maybe ty of 
+  Just (inner_ty, co) -> unwrapAllCasts inner_ty (co : cos)
+  Nothing -> (ty, cos)
+
+
+wrapCasts :: Type -> [KindCoercion] -> Type
+wrapCasts ty [] = ty
+wrapCasts ty (co : cos) = wrapCasts (CastTy ty co) cos
+
+decomp :: Type -> (([TcInvisTVBinder], ThetaType, Type), [KindCoercion])
+decomp ty = 
+  let (bndrs, body) = tcSplitForAllInvisTVBinders ty
+      (body', cos)  = unwrapAllCasts body []
+      (theta, tau)  = tcSplitPhiTy body'
+  in
+    ((bndrs, theta, tau), cos)
+
+-- This guy looks for unmatchable thetas referring to a specific tv and matchability flag
+-- on each of those tvs. We'll have to DFS through the Type tree and match/flip the the binding on
+-- TyVarTys that are relevant.
+alterClsTvs :: Class -> Matchability -> ([TcInvisTVBinder], ThetaType, Type) -> ([TcInvisTVBinder], ThetaType, Type)
+alterClsTvs cls m (bndrs, thetas, tau) = (bndrs,
+  thetas,
+  (flipUnmatchable (unmatchable_constrained_bndrs thetas) tau))
+  where
+    -- Uses list as a Maybe
+    find_tv :: Type -> [TyVar]
+    find_tv (TyVarTy tv _) = [tv]
+    find_tv _            = []
+
+    get_pred_tys :: PredType -> [Type]
+    get_pred_tys = snd . getClassPredTys
+
+    -- Needs to filter out all the non-class thetas
+    unmatchable_constrained_bndrs :: ThetaType -> [TyVar]
+    unmatchable_constrained_bndrs thetas = 
+      let class_preds = mapMaybe getClassPredTys_maybe thetas
+          matching_preds = filter ((== cls) . fst) class_preds
+          pred_tys = concatMap snd matching_preds
+      in concatMap find_tv pred_tys
+
+    -- Algorithm here looks like recurse until we find a TyVarTy, 
+    -- if it matches one of the tyvartys in the provided list, flip
+    -- matchable to unmatchable, otherwise leave the structure alone.   
+    -- ! Need to also flip tyvartys in binders or pred if needed
+
+    flipUnmatchable :: [TyVar] -> Type -> Type
+    flipUnmatchable toFlip tys = case tys of 
+      TyVarTy tv _ | tv `elem` toFlip -> TyVarTy tv m
+      TyVarTy _ _ -> tys
+      AppTy th arg -> AppTy (flipUnmatchable toFlip th) (flipUnmatchable toFlip arg)
+      TyConApp tc args -> TyConApp (flipTyCon toFlip tc) (map (flipUnmatchable toFlip) args)
+      FunTy af mul mat arg res -> FunTy af mul mat (flipUnmatchable toFlip arg) (flipUnmatchable toFlip res)
+      ForAllTy bndr body  -> ForAllTy bndr (flipUnmatchable toFlip body)
+      LitTy _ -> tys
+      CastTy ty co -> CastTy (flipUnmatchable toFlip ty) (flipKiCo toFlip co)
+      CoercionTy co -> CoercionTy (flipCo toFlip co)
+
+    flipTyCon :: [TyVar] -> TyCon -> TyCon
+    flipTyCon toFlip tc = tc { 
+      tyConResKind = flipUnmatchable toFlip (tyConResKind tc),
+      tyConKind = flipUnmatchable toFlip (tyConKind tc),
+      tyConNullaryTy = flipUnmatchable toFlip (tyConNullaryTy tc) }
+
+    flipKiCo :: [TyVar] -> KindCoercion -> KindCoercion
+    flipKiCo = flipCo
+
+    flipCo :: [TyVar] -> Coercion -> Coercion
+    flipCo toFlip co = case co of 
+      Refl ty -> Refl $ flipUnmatchable toFlip ty
+      GRefl r ty mco -> GRefl r (flipUnmatchable toFlip ty) (flipMCo toFlip mco)
+      TyConAppCo r tc cos -> TyConAppCo r (flipTyCon toFlip tc) (map (flipCo toFlip) cos)
+      AppCo th ta -> AppCo (flipCo toFlip th) (flipCo toFlip ta)
+      ForAllCo { fco_kind = fcokind, fco_body = fcobody } -> co { fco_kind = flipKiCo toFlip fcokind, fco_body = flipCo toFlip fcobody }
+      FunCo { fco_mult = mult, fco_arg = arg, fco_res = res} -> co {fco_mult = flipCo toFlip mult, fco_arg = flipCo toFlip arg, fco_res = flipCo toFlip res}
+      UnivCo { uco_lty = lty, uco_rty = rty, uco_deps = deps} -> co {uco_lty = flipUnmatchable toFlip lty, uco_rty = flipUnmatchable toFlip rty, uco_deps = map (flipCo toFlip) deps}
+      SymCo c -> SymCo $ flipCo toFlip c
+      TransCo a b -> TransCo (flipCo toFlip a) (flipCo toFlip b)
+      SelCo sel c -> SelCo sel $ flipCo toFlip c
+      LRCo lr c -> LRCo lr $ flipCo toFlip c
+      InstCo c c' -> InstCo (flipCo toFlip c) (flipCo toFlip c')
+      KindCo kco -> KindCo $ flipCo toFlip kco
+      SubCo sco -> SubCo $ flipCo toFlip sco
+      _ -> co
+
+    flipMCo :: [TyVar] -> MCoercion -> MCoercion 
+    flipMCo _ MRefl = MRefl
+    flipMCo tvs (MCo co) = MCo $ flipCo tvs co
+
+    flipTheta :: [TyVar] -> PredType -> PredType
+    flipTheta = flipUnmatchable
+
+
+
+
+is_higher_kinded :: Type -> Bool
+is_higher_kinded tv = not $ null $ fst $ splitPiTys tv
+-- This guy looks for tyvars that don't have a theta type at all and infers a Matchable theta type
+-- We can pretty much do this by looking at all the invisible binders (see note above, the mechanism would change later if not)
+-- and building a set of those. If there are any missing matchable or unmatchable explicitly stated then we 
+-- infer matchable and readd it to the list of preds.
+-- FYI:
+--        => type ThetaType = [PredType]
+-- so yeah
+inferMatchableThetas :: (Class, Class) -> ([TcInvisTVBinder], ThetaType, Type) -> TcM ([TcInvisTVBinder], ThetaType, Type)
+inferMatchableThetas (mcls, ucls) (bndrs, thetas, tau) = do
+  (mbndrs, _) <- mentioned_bndrs tau bndrs
+  mbndrs_ki <- mapM (liftZonkM . zonkTcType . tyVarKind) mbndrs
+  traceTc "inferMatchableThetas" (ppr mbndrs <+> ppr mbndrs_ki <+> ppr thetas <+> ppr tau)
+  return $ (bndrs, new_thetas (unconstrained_bndrs mbndrs (constrained_bndrs thetas)) thetas, tau)
+  where
+    get_tyvar :: TcInvisTVBinder -> TyVar
+    get_tyvar (Bndr tv _) = tv
+
+    -- So this is also a DFS over the type tree, all app-ty heads.
+    -- So the algorithm looks like:
+    -- 1. Recurse to find an AppTy constructor.
+    -- 2. Find the left-most head of this AppTy, determine if it is a TyVarTy (seperate fn)
+    --    and if it is, return it, otherwise if we hit some other constructor bail
+    -- 3. Continue recursing
+    --
+    -- This all probably has to be done under coreView too, i.e. casts and coercions unwrapped.
+
+    -- ! Yeah this needs to recursively decompose stuff under foralls.
+    -- ! I need to figure out a smart way to get the kind of something not quite in
+    -- ! function position -- so probably undefaulted. 
+    -- ? Next day: Yeah I think this needs to be zonked because it has a filled tyvar and
+    -- ? we just need to "follow the chain"(?) via zonking
+    mentioned_bndrs :: a -> [TcInvisTVBinder] -> TcM ([TyVar], a)
+    mentioned_bndrs ty bndrs = do
+        tvs <- go bndrs
+        return $ (nub tvs, ty)
+      where
+        go :: [TcInvisTVBinder] -> TcM [TyVar]
+        go bndrs = do
+          let tyvars = map get_tyvar bndrs
+          tvKinds <- mapM (liftZonkM . zonkTcType . tyVarKind) tyvars
+
+          return $ ((map snd) . (filter (keepKind . fst))) (zip tvKinds tyvars)
+
+        do_sub_foralls :: Type -> TcM Type
+        do_sub_foralls = undefined
+        
+        -- go :: Type -> TcM [TyVar]
+        -- go t@(TyVarTy tv _) = do
+        --     zonked_kind <- liftZonkM $ zonkTcType (tyVarKind tv)
+        --     if is_higher_kinded zonked_kind
+        --       then return [tv]
+        --       else return []
+        -- go t@(AppTy h arg)        = do 
+        --   h_tvs <- go h
+        --   arg_tvs <- go arg
+        --   return (h_tvs ++ arg_tvs)
+        -- go t@(TyConApp tc args)   = do 
+        --   args_tvs <- mapM go args
+        --   return (concat args_tvs)
+        -- go t@(FunTy _ _ arg res)  = do 
+        --   arg_tvs <- go arg
+        --   res_tvs <- go res
+        --   return (arg_tvs ++ res_tvs)
+        -- go t@(CastTy ty co)       = go ty
+        -- go t@(ForAllTy bndr body) = return []
+        -- go t@(LitTy _)            = return []
+        -- go t@(CoercionTy co)      = return []
+        -- go _                      = return []
+
+
+    -- | Check if a kind is polykinded (contains kind variables)
+    is_polykinded :: Type -> Bool
+    is_polykinded ty = not $ isEmptyVarSet $ tyCoVarsOfType ty
+
+    keepKind :: Type -> Bool
+    keepKind tv = (is_higher_kinded tv || is_polykinded tv) && (not (isTYPEorCONSTRAINT tv))
+
+    get_pred_tys :: PredType -> [Type]
+    get_pred_tys = snd . getClassPredTys
+
+    -- Uses list as a Maybe
+    find_tv :: Type -> [TyVar]
+    find_tv (TyVarTy tv _) = [tv]
+    find_tv _            = []
+
+    -- Needs to filter out all the non-class thetas
+    constrained_bndrs :: ThetaType -> [TyVar]
+    constrained_bndrs thetas = 
+      let class_preds = mapMaybe getClassPredTys_maybe thetas
+          matching_preds = filter (\(c, _) -> c == mcls || c == ucls) class_preds
+          pred_tys = concatMap snd matching_preds
+      in concatMap find_tv pred_tys
+
+    -- Mentioned -> Constrained -> Unconstrained
+    unconstrained_bndrs :: [TyVar] -> [TyVar] -> [TyVar]
+    unconstrained_bndrs = (\\)
+
+    new_theta :: TyVar -> PredType
+    new_theta tv = mkClassPred mcls [tyVarKind tv, mkTyVarTy tv]
+
+    new_thetas :: [TyVar] -> ThetaType -> ThetaType
+    new_thetas tvs theta = (++ theta) $ map (new_theta) tvs
+
+
+-- This guy does the mkForAllTys thingy with binders cheesed out of the
+--        => type InvisTVBinder  = VarBndr TyVar   Specificity
+-- definition
+specToFlag :: Specificity -> ForAllTyFlag
+specToFlag InferredSpec = Inferred
+specToFlag SpecifiedSpec = Specified
+
+buildForallBinders :: ([TcInvisTVBinder], ThetaType, Type) -> ([TcInvisTVBinder], ThetaType, Type)
+buildForallBinders = id
+-- buildForallBinders (bndr, theta, tau) = ((forallBinders . getForAllSpecificity) bndr, theta, tau)
+  where
+      get_specificity :: TcInvisTVBinder -> (Specificity, TyVar)
+      get_specificity (Bndr tv s) = (s, tv)
+
+      getForAllSpecificity :: [TcInvisTVBinder] -> [(Specificity, TyVar)]
+      getForAllSpecificity = map get_specificity
+
+      forallBinders :: [(Specificity, TyVar)] -> [ForAllTyBinder]
+      forallBinders = map (uncurry mkForAllTyBinder) . map (first specToFlag)
+
+-- Re-package the sigma type up, nothing ever happened :)
+collect :: (([TcInvisTVBinder], ThetaType, Type), [KindCoercion]) -> TcM Type
+collect ((bndrs, theta, tau), cos) = do
+  tau_ty <- liftZonkM $ zonkTcType tau
+  let phi_ty = mkPhiTy theta tau_ty
+      casted = wrapCasts phi_ty cos
+      final_ty = mkInvisForAllTys bndrs casted
+  
+  traceTc "collect" (ppr bndrs <+> ppr theta <+> ppr tau <+> ppr cos)
+  traceTc "collect_final" (ppr final_ty)
+  
+  return final_ty
+
+elaborateMatchability :: (Class, Class) -> Type -> TcM Type
+elaborateMatchability (mcls, ucls) sigma_ty = do
+  traceTc "elaborateMatchability" (ppr sigma_ty)
+  let (decomposed, cos)     = decomp sigma_ty
+  with_inferred_match     <- inferMatchableThetas (mcls, ucls) decomposed
+  let with_unmatch   = alterClsTvs ucls MaybeUnmatchable with_inferred_match
+  let with_match     = alterClsTvs mcls Matchable with_unmatch
+      with_binders   = buildForallBinders with_match
+  result         <- collect (with_binders, cos)
+  return result
+
+
 tcHsSigType :: UserTypeCtxt -> LHsSigType GhcRn -> TcM Type
 -- Does validity checking
 -- See Note [Recipe for checking a signature]
@@ -486,13 +773,22 @@ tc_lhs_sig_type skol_info full_hs_ty@(L loc (HsSig { sig_bndrs = hs_outer_bndrs
 
        ; let outer_tv_bndrs :: [InvisTVBinder] = outerTyVarBndrs outer_bndrs
              ty1 = mkInvisForAllTys outer_tv_bndrs ty
-       ; kvs <- kindGeneralizeSome skol_info wanted ty1
 
-       -- Build an implication for any as-yet-unsolved kind equalities
+       ; mcls <- tcLookupClass matchableClassName
+       ; ucls <- tcLookupClass unmatchableClassName
+
+       ; ty1' <- elaborateMatchability (mcls, ucls) ty1
+
+      --  ; traceTc "tc_lhs_sig_type" (ppr ty1)
+
+       ; kvs <- kindGeneralizeSome skol_info wanted ty1'
+
+       ; traceTc "tc_lhs_sig_type 2" (ppr ty1)
+       ; kvs <- kindGeneralizeSome skol_info wanted ty1       -- Build an implication for any as-yet-unsolved kind equalities
        -- See Note [Skolem escape in type signatures]
        ; implic <- buildTvImplication (getSkolemInfo skol_info) kvs tc_lvl wanted
 
-       ; return (implic, mkInfForAllTys kvs ty1) }
+       ; return (implic, mkInfForAllTys kvs ty1') }
   where
     err_ctx exp_kind tidy_env
       = do { (tidy_env2, exp_kind) <- zonkTidyTcType tidy_env exp_kind
@@ -583,6 +879,82 @@ c.f. see also Note [Skolem escape and forall-types]. The difference
 is that we don't need to simplify at a forall type, only at the
 top level of a signature.
 -}
+collectBndrs :: Type -> StateM [TyVar] Type
+collectBndrs (ForAllTy bndr ty) = do
+  ty' <- collectBndrs ty
+
+  seen_tvs <- get_and_reset
+
+  return $ ForAllTy bndr (top_level (ty', seen_tvs))
+
+collectBndrs (TyVarTy tv m) = return (TyVarTy tv m)
+collectBndrs (LitTy lit) = return (LitTy lit)
+collectBndrs (CoercionTy co) = return (CoercionTy co)
+
+collectBndrs (AppTy t1 t2) = AppTy <$> collectBndrs t1 <*> collectBndrs t2
+collectBndrs (TyConApp tc args) = TyConApp tc <$> mapM collectBndrs args
+collectBndrs (FunTy af mult mat arg res) = do
+  case get_tv mat of
+    Just tv -> seen tv
+    Nothing -> return ()
+
+  FunTy af mult mat <$> collectBndrs arg <*> collectBndrs res
+collectBndrs (CastTy ty co) = do
+  ty' <- collectBndrs ty
+  return $ CastTy ty' co
+
+get_and_reset :: StateM [TyVar] [TyVar]
+get_and_reset = do
+  tvs <- get
+  put []
+  return $ nub tvs
+
+get_tv :: Type -> Maybe TyVar
+get_tv (TyVarTy tv _) = Just tv
+get_tv _ = Nothing
+
+seen :: TyVar -> StateM [TyVar] ()
+seen tv = modify (tv:)
+
+
+top_level :: (Type, [TyVar]) -> Type
+top_level (ty, tvs) = mkInvisForAllTys (map (\tv -> Bndr tv SpecifiedSpec) tvs) ty
+
+-- The idea here is that we recurse through Type's structure. If we see a FunTy, we should
+-- grab the matchability tyvar associated with the FunTy if it is a tyvar. So we accumulate
+-- this list of tyvars. Then, if we see a forall, we embed inside the forall's body another forall
+-- being for the binders for the matchability tyvars. 
+-- if we're at the top level and still have those tyvars then add those binders too
+quantifyMatchabilites :: Type -> TcM Type
+quantifyMatchabilites tv = return . top_level $ runStateM (collectBndrs tv) []
+
+isTemplateMatchabilityVar :: Type -> Bool
+isTemplateMatchabilityVar tv = (typeKind tv) `eqType` matchabilityTy
+
+replaceMatchabilityTemplates :: Type -> TcM Type
+replaceMatchabilityTemplates (ForAllTy bndr ty) = 
+  ForAllTy bndr <$> replaceMatchabilityTemplates ty
+
+replaceMatchabilityTemplates (FunTy af mult mat arg res) = do
+  mat' <- case mat of
+    _ | isTemplateMatchabilityVar mat -> 
+      newFlexiTyVarTy matchabilityTy
+    _ -> return mat
+  
+  FunTy af mult mat' 
+    <$> replaceMatchabilityTemplates arg 
+    <*> replaceMatchabilityTemplates res
+
+replaceMatchabilityTemplates (AppTy t1 t2) = 
+  AppTy <$> replaceMatchabilityTemplates t1 <*> replaceMatchabilityTemplates t2
+
+replaceMatchabilityTemplates (TyConApp tc args) = 
+  TyConApp tc <$> mapM replaceMatchabilityTemplates args
+
+replaceMatchabilityTemplates (CastTy ty co) = 
+  flip CastTy co <$> replaceMatchabilityTemplates ty
+
+replaceMatchabilityTemplates ty = return ty  -- TyVarTy, LitTy, CoercionTy
 
 -- Does validity checking and zonking.
 tcStandaloneKindSig :: LStandaloneKindSig GhcRn -> TcM (Name, Kind)
@@ -604,8 +976,7 @@ tc_top_lhs_type :: TypeOrKind -> UserTypeCtxt -> LHsSigType GhcRn -> TcM Type
 -- tc_top_lhs_type is used for kind-checking top-level LHsSigTypes where
 --   we want to fully solve /all/ equalities, and report errors
 -- Does zonking, but not validity checking because it's used
---   for things (like deriving and instances) that aren't
---   ordinary types
+--   for things (like deriving and instances) that aren't--   ordinary types
 -- Used for both types and kinds
 tc_top_lhs_type tyki ctxt (L loc sig_ty@(HsSig { sig_bndrs = hs_outer_bndrs
                                                , sig_body = body }))
@@ -619,10 +990,22 @@ tc_top_lhs_type tyki ctxt (L loc sig_ty@(HsSig { sig_bndrs = hs_outer_bndrs
                       tc_check_lhs_type (mkMode tyki) body kind }
 
        ; outer_bndrs <- scopedSortOuter outer_bndrs
+
        ; let outer_tv_bndrs = outerTyVarBndrs outer_bndrs
              ty1 = mkInvisForAllTys outer_tv_bndrs ty
+       ; traceTc "tc_top_lhs_type 1.5" (ppr ty1 <+> ppr tyki)
 
+       ; tki <- (liftZonkM . zonkTcType) $ typeKind ty
+      --  ; ty1 <- case tyki of 
+        -- TypeLevel | not (is_higher_kinded tki) -> do
+        --  ; mcls <- tcLookupClass matchableClassName
+        --  ; ucls <- tcLookupClass unmatchableClassName
+        --  ; elaborateMatchability (mcls, ucls) ty1'
+        -- _ -> pure ty1'
+
+       ; traceTc "tc_top_lhs_type 2" (ppr ty1)
        ; kvs <- kindGeneralizeAll skol_info ty1  -- "All" because it's a top-level type
+       ; traceTc "got here" (text "")
        ; reportUnsolvedEqualities skol_info kvs tclvl wanted
 
        ; final_ty <- initZonkEnv DefaultFlexi
@@ -1104,7 +1487,10 @@ substitution to each HsCoreTy and all is well:
 ------------------------------------------
 tcCheckLHsType :: LHsType GhcRn -> TcKind -> TcM TcType
 tcCheckLHsType hs_ty exp_kind
-  = tc_check_lhs_type typeLevelMode hs_ty exp_kind
+  = do
+    ty <- tc_check_lhs_type typeLevelMode hs_ty exp_kind
+    ty' <- replaceMatchabilityTemplates ty
+    return ty'
 
 tc_check_lhs_type :: TcTyMode -> LHsType GhcRn -> TcKind -> TcM TcType
 tc_check_lhs_type mode (L span ty) exp_kind

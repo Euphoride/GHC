@@ -127,7 +127,7 @@ import {-# SOURCE #-} GHC.Builtin.Types
   , int64ElemRepDataConTy, word8ElemRepDataConTy, word16ElemRepDataConTy
   , word32ElemRepDataConTy, word64ElemRepDataConTy, floatElemRepDataConTy
   , doubleElemRepDataConTy
-  , multiplicityTy
+  , multiplicityTy, matchabilityTy
   , constraintKind )
 
 import {-# SOURCE #-} GHC.Types.TyThing( mkATyCon )
@@ -146,7 +146,7 @@ import GHC.Types.Unique
 import GHC.Builtin.Uniques
 import GHC.Builtin.Names
 import GHC.Utils.Misc ( changeLast )
-import GHC.Utils.Panic ( assertPpr )
+import GHC.Utils.Panic ( assertPpr, assert )
 import GHC.Utils.Outputable
 
 import GHC.Data.FastString
@@ -557,6 +557,9 @@ multiplicityTyVar1, multiplicityTyVar2  :: TyVar
 (multiplicityTyVar1 : multiplicityTyVar2 : _)
    = drop 13 (mkTemplateTyVars (repeat multiplicityTy))  -- selects 'n', 'm'
 
+matchabilityTyVar :: TyVar
+(matchabilityTyVar : _) = drop 21 (mkTemplateTyVars (repeat matchabilityTy))  -- selects 'u', not much of a better option  -- selects 'u', not much of a better option
+
 
 {-
 ************************************************************************
@@ -638,7 +641,8 @@ tcArrowTyConName = mkBuiltInPrimTc (fsLit "-=>") tcArrowTyConKey tcArrowTyCon
 -- | The @FUN@ type constructor.
 --
 -- @
--- FUN :: forall (m :: Multiplicity) ->
+-- FUN :: forall (m :: Multiplicity) -> 
+--        forall (m :: Matchability) ->
 --        forall {rep1 :: RuntimeRep} {rep2 :: RuntimeRep}.
 --        TYPE rep1 -> TYPE rep2 -> Type
 -- @
@@ -648,21 +652,26 @@ tcArrowTyConName = mkBuiltInPrimTc (fsLit "-=>") tcArrowTyConKey tcArrowTyCon
 --
 -- This is a deliberate choice to allow future extensions to the
 -- function arrow.
+
+-- This assertion, that length tc_roles == length tc_bndrs, not being there originally
+-- baffles me. I lost so much time and perhaps some of my sanity chasing mirages all over the 
+-- codebase only to arrive here.
 fUNTyCon :: TyCon
-fUNTyCon = mkPrimTyCon fUNTyConName tc_bndrs liftedTypeKind tc_roles
+fUNTyCon = assert (length tc_roles == length tc_bndrs) $ mkPrimTyCon fUNTyConName tc_bndrs liftedTypeKind tc_roles
   where
     -- See also unrestrictedFunTyCon
     tc_bndrs = [ mkNamedTyConBinder Required multiplicityTyVar1
+               , mkNamedTyConBinder Required matchabilityTyVar
                , mkNamedTyConBinder Inferred runtimeRep1TyVar
                , mkNamedTyConBinder Inferred runtimeRep2TyVar ]
                ++ mkTemplateAnonTyConBinders [ mk_TYPE_app runtimeRep1Ty
                                              , mk_TYPE_app runtimeRep2Ty ]
-    tc_roles = [Nominal, Nominal, Nominal, Representational, Representational]
+    tc_roles = [Nominal, Nominal, Nominal, Nominal, Representational, Representational]
 
 -- (=>) :: forall {rep1 :: RuntimeRep} {rep2 :: RuntimeRep}.
 --         CONSTRAINT rep1 -> TYPE rep2 -> Type
 ctArrowTyCon :: TyCon
-ctArrowTyCon = mkPrimTyCon ctArrowTyConName tc_bndrs liftedTypeKind tc_roles
+ctArrowTyCon = assert (length tc_roles == length tc_bndrs) $ mkPrimTyCon ctArrowTyConName tc_bndrs liftedTypeKind tc_roles
   where
     -- See also unrestrictedFunTyCon
     tc_bndrs = [ mkNamedTyConBinder Inferred runtimeRep1TyVar
@@ -674,7 +683,7 @@ ctArrowTyCon = mkPrimTyCon ctArrowTyConName tc_bndrs liftedTypeKind tc_roles
 -- (==>) :: forall {rep1 :: RuntimeRep} {rep2 :: RuntimeRep}.
 --          CONSTRAINT rep1 -> CONSTRAINT rep2 -> Constraint
 ccArrowTyCon :: TyCon
-ccArrowTyCon = mkPrimTyCon ccArrowTyConName tc_bndrs constraintKind tc_roles
+ccArrowTyCon = assert (length tc_roles == length tc_bndrs) $ mkPrimTyCon ccArrowTyConName tc_bndrs constraintKind tc_roles
   where
     -- See also unrestrictedFunTyCon
     tc_bndrs = [ mkNamedTyConBinder Inferred runtimeRep1TyVar
@@ -686,7 +695,7 @@ ccArrowTyCon = mkPrimTyCon ccArrowTyConName tc_bndrs constraintKind tc_roles
 -- (-=>) :: forall {rep1 :: RuntimeRep} {rep2 :: RuntimeRep}.
 --          TYPE rep1 -> CONSTRAINT rep2 -> Constraint
 tcArrowTyCon :: TyCon
-tcArrowTyCon = mkPrimTyCon tcArrowTyConName tc_bndrs constraintKind tc_roles
+tcArrowTyCon = assert (length tc_roles == length tc_bndrs) $ mkPrimTyCon tcArrowTyConName tc_bndrs constraintKind tc_roles
   where
     -- See also unrestrictedFunTyCon
     tc_bndrs = [ mkNamedTyConBinder Inferred runtimeRep1TyVar

@@ -207,7 +207,7 @@ data TypeRep a where
 
     -- | Invariant: Saturated arrow types (e.g. things of the form @a -> b@)
     -- are represented with @'TrFun' a b@, not @TrApp (TrApp funTyCon a) b@.
-    TrApp   :: forall k1 k2 (a :: k1 -> k2) (b :: k1).
+    TrApp   :: forall k1 k2 (a :: k1 -> k2) (b :: k1). (Matchable a, Matchable b) =>
                { -- See Note [TypeRep fingerprints]
                  trAppFingerprint :: {-# UNPACK #-} !Fingerprint
 
@@ -236,7 +236,7 @@ data TypeRep a where
                , trFunMul :: !(TypeRep m)
                , trFunArg :: !(TypeRep a)
                , trFunRes :: !(TypeRep b) }
-            -> TypeRep (FUN m a b)
+            -> TypeRep (FUN m 'M a b)
 
 -- | A 'TypeableInstance' wraps up a 'Typeable' instance for explicit
 -- handling. For internal use: for defining 'TypeRep' pattern.
@@ -359,7 +359,7 @@ instance Ord (TypeRep a) where
 
 -- | A non-indexed type representation.
 data SomeTypeRep where
-    SomeTypeRep :: forall k (a :: k). !(TypeRep a) %1 -> SomeTypeRep
+    SomeTypeRep :: forall k (a :: k). Matchable a => !(TypeRep a) %1 -> SomeTypeRep
 
 instance Eq SomeTypeRep where
   SomeTypeRep a == SomeTypeRep b =
@@ -512,8 +512,8 @@ pattern App f x <- (splitApp -> IsApp f x)
   where App f x = mkTrAppChecked f x
 
 data AppOrCon (a :: k) where
-    IsApp :: forall k k' (f :: k' -> k) (x :: k'). ()
-          => TypeRep f %1 -> TypeRep x %1 -> AppOrCon (f x)
+    IsApp :: forall k k' (f :: k' -> k) (x :: k'). (Matchable x, Matchable f) =>
+          TypeRep f %1 -> TypeRep x %1 -> AppOrCon (f x)
     -- See Note [Con evidence]
     IsCon :: NotApplication a => TyCon %1 -> [SomeTypeRep] %1 -> AppOrCon a
 
@@ -719,7 +719,7 @@ unkindedTypeRep :: SomeKindedTypeRep k -> SomeTypeRep
 unkindedTypeRep (SomeKindedTypeRep x) = SomeTypeRep x
 
 data SomeKindedTypeRep k where
-    SomeKindedTypeRep :: forall k (a :: k). TypeRep a
+    SomeKindedTypeRep :: forall k (a :: k). Matchable a => TypeRep a
                       %1 -> SomeKindedTypeRep k
 
 kApp :: SomeKindedTypeRep (k -> k')
@@ -810,8 +810,8 @@ vecElemTypeRep e =
 
 bareArrow :: forall (m :: Multiplicity) (r1 :: RuntimeRep) (r2 :: RuntimeRep)
                     (a :: TYPE r1) (b :: TYPE r2). ()
-          => TypeRep (FUN m a b)
-          -> TypeRep (FUN m :: TYPE r1 -> TYPE r2 -> Type)
+          => TypeRep (FUN m 'M a b)
+          -> TypeRep (FUN m 'M :: TYPE r1 -> TYPE r2 -> Type)
 bareArrow (TrFun _ m a b) =
     mkTrCon funTyCon [SomeTypeRep m, SomeTypeRep rep1, SomeTypeRep rep2]
   where
@@ -1178,7 +1178,7 @@ typeLitTypeRep nm kind_tycon = mkTrCon (mkTypeLitTyCon nm kind_tycon) []
 -- | For compiler use.
 mkTrFun :: forall (m :: Multiplicity) (r1 :: RuntimeRep) (r2 :: RuntimeRep)
                   (a :: TYPE r1) (b :: TYPE r2).
-           TypeRep m -> TypeRep a -> TypeRep b -> TypeRep ((FUN m a b) :: Type)
+           TypeRep m -> TypeRep a -> TypeRep b -> TypeRep ((FUN m 'M a b) :: Type)
 mkTrFun mul arg res = TrFun
     { trFunFingerprint = fpr
     , trFunMul = mul

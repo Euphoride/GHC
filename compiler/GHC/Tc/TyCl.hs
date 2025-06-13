@@ -117,6 +117,9 @@ import Data.Traversable ( for )
 import Data.Tuple( swap )
 import qualified Data.Semigroup as S
 
+import GHC.Builtin.Names (matchableClassName, unmatchableClassName)
+import GHC.Tc.Gen.HsType (elaborateMatchability)
+
 {-
 ************************************************************************
 *                                                                      *
@@ -4018,6 +4021,11 @@ tcConDecl new_or_data dd_info rep_tycon tc_bndrs res_kind tag_map
          -- the kvs below are those kind variables entirely unmentioned by the user
          --   and discovered only by generalization
 
+       ; mcls <- tcLookupClass matchableClassName
+       ; ucls <- tcLookupClass unmatchableClassName
+
+       ; fake_ty <- elaborateMatchability (mcls, ucls) fake_ty
+
        ; kvs <- kindGeneralizeAll skol_info fake_ty
 
        ; let all_skol_tvs = tc_tvs ++ kvs
@@ -4109,11 +4117,20 @@ tcConDecl new_or_data dd_info rep_tycon tc_bndrs _res_kind tag_map
        ; outer_bndrs <- scopedSortOuter outer_bndrs
        ; let outer_tv_bndrs = outerTyVarBndrs outer_bndrs
 
-       ; tkvs <- kindGeneralizeAll skol_info
-                    (mkInvisForAllTys outer_tv_bndrs $
+       ; let ty =  (mkInvisForAllTys outer_tv_bndrs $
                      tcMkPhiTy ctxt                  $
                      tcMkScaledFunTys arg_tys        $
                      res_ty)
+
+       ; mcls <- tcLookupClass matchableClassName
+       ; ucls <- tcLookupClass unmatchableClassName
+
+      --  ; ty<- elaborateMatchability (mcls, ucls) ty
+
+
+
+       ; tkvs <- kindGeneralizeAll skol_info ty
+                   
        ; traceTc "tcConDecl:GADT" (ppr names $$ ppr res_ty $$ ppr tkvs)
        ; reportUnsolvedEqualities skol_info tkvs tclvl wanted
 
@@ -5749,7 +5766,7 @@ checkValidRoles tc
       | Just ty' <- coreView ty -- #14101
       = check_ty_roles env role ty'
 
-    check_ty_roles env role (TyVarTy tv)
+    check_ty_roles env role (TyVarTy tv _)
       = case lookupVarEnv env tv of
           Just role' -> unless (role' `ltRole` role || role' == role) $
                         report_error role $ TyVarRoleMismatch tv role'
@@ -5769,8 +5786,8 @@ checkValidRoles tc
       =  check_ty_roles env role    ty1
       >> check_ty_roles env Nominal ty2
 
-    check_ty_roles env role (FunTy _ w ty1 ty2)
-      =  check_ty_roles env Nominal w
+    check_ty_roles env role (FunTy _ w m ty1 ty2)
+      =  check_ty_roles env Nominal w >> check_ty_roles env Nominal m
       >> check_ty_roles env role ty1
       >> check_ty_roles env role ty2
 

@@ -156,7 +156,7 @@ matchActualFunTy
 -- If   (wrap, arg_ty, res_ty) = matchActualFunTy ... fun_ty
 -- then wrap :: fun_ty ~> (arg_ty -> res_ty)
 -- and NB: res_ty is an (uninstantiated) SigmaType
-
+-- ! FLAG -> This is where matching happens for expected/actual function args
 matchActualFunTy herald mb_thing err_info fun_ty
   = assertPpr (isRhoTy fun_ty) (ppr fun_ty) $
     go fun_ty
@@ -177,7 +177,7 @@ matchActualFunTy herald mb_thing err_info fun_ty
       do { hasFixedRuntimeRep_syntactic (FRRExpectedFunTy herald 1) arg_ty
          ; return (idHsWrapper, Scaled w arg_ty, res_ty) }
 
-    go ty@(TyVarTy tv)
+    go ty@(TyVarTy tv _)
       | isMetaTyVar tv
       = do { cts <- readMetaTyVar tv
            ; case cts of
@@ -862,7 +862,7 @@ matchExpectedFunTys herald ctx arity (Check top_ty) thing_inside
 
     ----------------------------
     -- Type variables
-    check n_req rev_pat_tys ty@(TyVarTy tv)
+    check n_req rev_pat_tys ty@(TyVarTy tv _)
       | isMetaTyVar tv
       = do { cts <- readMetaTyVar tv
            ; case cts of
@@ -996,7 +996,7 @@ matchExpectedTyConApp tc orig_ty
        | tc == tycon  -- Common case
        = return (mkNomReflCo ty, args)
 
-    go (TyVarTy tv)
+    go (TyVarTy tv _)
        | isMetaTyVar tv
        = do { cts <- readMetaTyVar tv
             ; case cts of
@@ -1039,7 +1039,7 @@ matchExpectedAppTy orig_ty
       | Just (fun_ty, arg_ty) <- tcSplitAppTy_maybe ty
       = return (mkNomReflCo orig_ty, (fun_ty, arg_ty))
 
-    go (TyVarTy tv)
+    go (TyVarTy tv _)
       | isMetaTyVar tv
       = do { cts <- readMetaTyVar tv
            ; case cts of
@@ -1621,6 +1621,15 @@ tcEqMult origin w_actual w_expected = do
   -- See Note [Coercion errors in tcSubMult].
   ; ensureReflMultiplicityCo coercion origin }
 
+-- tcEqMat :: CtOrigin -> Mat -> Mat -> TcM ()
+-- tcEqMat origin w_actual w_expected = do
+--   {
+--   -- Note that here we do not call to `submult`, so we check
+--   -- for strict equality.
+--   ; coercion <- unifyTypeAndEmit TypeLevel origin w_actual w_expected
+--   -- See Note [Coercion errors in tcSubMult].
+--   ; ensureReflMatCo coercion origin }
+
 
 {- *********************************************************************
 *                                                                      *
@@ -1857,7 +1866,7 @@ tc_sub_type_deep unify inst_orig ctxt ty_actual ty_expected
     go ty_a ty_e | Just ty_a' <- coreView ty_a = go ty_a' ty_e
                  | Just ty_e' <- coreView ty_e = go ty_a  ty_e'
 
-    go (TyVarTy tv_a) ty_e
+    go (TyVarTy tv_a _) ty_e
       = do { lookup_res <- isFilledMetaTyVar_maybe tv_a
            ; case lookup_res of
                Just ty_a' ->
@@ -1866,8 +1875,8 @@ tc_sub_type_deep unify inst_orig ctxt ty_actual ty_expected
                     ; tc_sub_type_deep unify inst_orig ctxt ty_a' ty_e }
                Nothing -> just_unify ty_actual ty_expected }
 
-    go ty_a@(FunTy { ft_af = af1, ft_mult = act_mult, ft_arg = act_arg, ft_res = act_res })
-       ty_e@(FunTy { ft_af = af2, ft_mult = exp_mult, ft_arg = exp_arg, ft_res = exp_res })
+    go ty_a@(FunTy { ft_af = af1, ft_mult = act_mult, ft_arg = act_arg, ft_res = act_res, ft_mat = act_mat })
+       ty_e@(FunTy { ft_af = af2, ft_mult = exp_mult, ft_arg = exp_arg, ft_res = exp_res, ft_mat = exp_mat })
       | isVisibleFunArg af1, isVisibleFunArg af2
       = if (isTauTy ty_a && isTauTy ty_e)       -- Short cut common case to avoid
         then just_unify ty_actual ty_expected   -- unnecessary eta expansion
@@ -1877,6 +1886,7 @@ tc_sub_type_deep unify inst_orig ctxt ty_actual ty_expected
         do { arg_wrap  <- tc_sub_type_ds Deep unify given_orig GenSigCtxt exp_arg act_arg
                           -- GenSigCtxt: See Note [Setting the argument context]
            ; res_wrap  <- tc_sub_type_deep unify inst_orig ctxt act_res exp_res
+          --  ; tcEqMat inst_orig act_mat exp_mat
            ; tcEqMult inst_orig act_mult exp_mult
              -- See Note [Multiplicity in deep subsumption]
            ; return (mkWpFun arg_wrap res_wrap (Scaled exp_mult exp_arg) exp_res) }
@@ -2207,14 +2217,14 @@ uType env@(UE { u_role = role }) orig_ty1 orig_ty2
         -- Note that we pass in *original* (before synonym expansion),
         -- so that type variables tend to get filled in with
         -- the most informative version of the type
-    go (TyVarTy tv1) ty2
+    go (TyVarTy tv1 _) ty2
       = do { lookup_res <- isFilledMetaTyVar_maybe tv1
            ; case lookup_res of
                Just ty1 -> do { traceTc "found filled tyvar" (ppr tv1 <+> text ":->" <+> ppr ty1)
                               ; uType env ty1 orig_ty2 }
                Nothing -> uUnfilledVar env NotSwapped tv1 ty2 }
 
-    go ty1 (TyVarTy tv2)
+    go ty1 (TyVarTy tv2 _)
       = do { lookup_res <- isFilledMetaTyVar_maybe tv2
            ; case lookup_res of
                Just ty2 -> do { traceTc "found filled tyvar" (ppr tv2 <+> text ":->" <+> ppr ty2)
@@ -2240,14 +2250,17 @@ uType env@(UE { u_role = role }) orig_ty1 orig_ty2
       | Just ty2' <- coreView ty2 = go ty1  ty2'
 
     -- Functions (t1 -> t2) just check the two parts
-    go (FunTy { ft_af = af1, ft_mult = w1, ft_arg = arg1, ft_res = res1 })
-       (FunTy { ft_af = af2, ft_mult = w2, ft_arg = arg2, ft_res = res2 })
+    go (FunTy { ft_af = af1, ft_mult = w1, ft_arg = arg1, ft_res = res1, ft_mat = mat1 })
+       (FunTy { ft_af = af2, ft_mult = w2, ft_arg = arg2, ft_res = res2, ft_mat = mat2 })
       | isVisibleFunArg af1  -- Do not attempt (c => t); just defer
       , af1 == af2           -- Important!  See #21530
       = do { co_w <- uType (env { u_role = funRole role SelMult }) w1   w2
+           ; co_m <- uType (env { u_role = funRole role SelMat }) mat1 mat2
            ; co_l <- uType (env { u_role = funRole role SelArg })  arg1 arg2
            ; co_r <- uType (env { u_role = funRole role SelRes })  res1 res2
-           ; return $ mkNakedFunCo role af1 co_w co_l co_r }
+
+           ; traceTc "emitting coercion: " (ppr (mkNakedFunCo role af1 co_w co_m co_l co_r))
+           ; return $ mkNakedFunCo role af1 co_w co_m co_l co_r }
 
         -- Always defer if a type synonym family (type function)
         -- is involved.  (Data families behave rigidly.)
@@ -2890,17 +2903,17 @@ matchExpectedFunKind hs_ty n k = go n k
 
     go n k | Just k' <- coreView k = go n k'
 
-    go n k@(TyVarTy kvar)
+    go n k@(TyVarTy kvar _)
       | isMetaTyVar kvar
       = do { maybe_kind <- readMetaTyVar kvar
            ; case maybe_kind of
                 Indirect fun_kind -> go n fun_kind
                 Flexi ->             defer n k }
 
-    go n (FunTy { ft_af = af, ft_mult = w, ft_arg = arg, ft_res = res })
+    go n (FunTy { ft_af = af, ft_mult = w, ft_arg = arg, ft_res = res, ft_mat = m })
       | isVisibleFunArg af
       = do { co <- go (n-1) res
-           ; return (mkNakedFunCo Nominal af (mkNomReflCo w) (mkNomReflCo arg) co) }
+           ; return (mkNakedFunCo Nominal af (mkNomReflCo w) (mkNomReflCo m) (mkNomReflCo arg) co) }
 
     go n other
      = defer n other
@@ -2967,16 +2980,16 @@ simpleUnifyCheck caller lhs_tv rhs
                UC_OnTheFly   -> False
                UC_Defaulting -> True
 
-    go (TyVarTy tv)
+    go (TyVarTy tv _)
       | lhs_tv == tv                                    = False
       | tcTyVarLevel tv `strictlyDeeperThan` lhs_tv_lvl = False
       | lhs_tv_is_concrete, not (isConcreteTyVar tv)    = False
       | occ_in_ty $! (tyVarKind tv)                     = False
       | otherwise                                       = True
 
-    go (FunTy {ft_af = af, ft_mult = w, ft_arg = a, ft_res = r})
+    go (FunTy {ft_af = af, ft_mult = w, ft_arg = a, ft_res = r, ft_mat = m})
       | not forall_ok, isInvisibleFunArg af = False
-      | otherwise                           = go w && go a && go r
+      | otherwise                           = go w && go a && go r -- && go m
 
     go (TyConApp tc tys)
       | lhs_tv_is_concrete, not (isConcreteTyCon tc) = False
@@ -3499,19 +3512,20 @@ checkTyEqRhs flags ty
   = case ty of
       LitTy {}        -> return $ okCheckRefl ty
       TyConApp tc tys -> checkTyConApp flags ty tc tys
-      TyVarTy tv      -> checkTyVar flags tv
+      TyVarTy tv _     -> checkTyVar flags tv
         -- Don't worry about foralls inside the kind; see Note [Checking for foralls]
         -- Nor can we expand synonyms; see Note [Occurrence checking: look inside kinds]
         --                             in GHC.Core.FVs
 
-      FunTy {ft_af = af, ft_mult = w, ft_arg = a, ft_res = r}
+      FunTy {ft_af = af, ft_mult = w, ft_arg = a, ft_res = r, ft_mat = m}
        | isInvisibleFunArg af  -- e.g.  Num a => blah
        -> return $ PuFail impredicativeProblem -- Not allowed (TyEq:F)
        | otherwise
        -> do { w_res <- checkTyEqRhs flags w
+             ; m_res <- checkTyEqRhs flags m
              ; a_res <- checkTyEqRhs flags a
              ; r_res <- checkTyEqRhs flags r
-             ; return (mkFunRedn Nominal af <$> w_res <*> a_res <*> r_res) }
+             ; return (mkFunRedn Nominal af <$> w_res <*> m_res <*> a_res <*> r_res) }
 
       AppTy fun arg -> do { fun_res <- checkTyEqRhs flags fun
                           ; arg_res <- checkTyEqRhs flags arg

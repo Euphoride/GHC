@@ -61,7 +61,7 @@ import GHC.Types.CostCentre
 import GHC.Types.Id
 import GHC.Types.Id.Info
 import GHC.Types.Id.Make
-import GHC.Types.Var( isInvisibleAnonPiTyBinder )
+import GHC.Types.Var( isInvisibleAnonPiTyBinder, EvVar)
 import GHC.Types.Var.Set( isEmptyVarSet, elemVarSet )
 import GHC.Types.Basic
 import GHC.Types.SrcLoc
@@ -77,6 +77,10 @@ import GHC.Utils.Misc
 import GHC.Utils.Outputable as Outputable
 import GHC.Utils.Panic
 import Control.Monad
+
+import GHC.Core.Class (Class(..))
+import GHC.Core.Predicate (getClassPredTys_maybe)
+
 
 {-
 ************************************************************************
@@ -655,13 +659,25 @@ ds_lapp (L loc e) hs_args core_args
   = putSrcSpanDsA loc $
     ds_app e hs_args core_args
 
+shouldSkip :: EvVar -> Bool
+shouldSkip ev = case getClassPredTys_maybe (idType ev) of
+    Just (cls, _) -> className cls `elem` [matchableClassName, unmatchableClassName]
+    _ -> False
+
+shouldSkipCoreArg :: CoreExpr -> Bool
+shouldSkipCoreArg (Var v) | shouldSkip v = True
+shouldSkipCoreArg _ = False
+
+
 ds_app :: HsExpr GhcTc -> [LHsExpr GhcTc] -> [CoreExpr] -> DsM CoreExpr
 -- The work-horse
 ds_app (HsPar _ e) hs_args core_args = ds_lapp e hs_args core_args
 
 ds_app (HsApp _ fun arg) hs_args core_args
   = do { core_arg <- dsLExpr arg
-       ; ds_lapp fun (arg : hs_args) (core_arg : core_args) }
+       ; case core_arg of 
+          Var v | shouldSkip v -> ds_lapp fun (hs_args) (core_args)
+          _ -> ds_lapp fun (arg : hs_args) (core_arg : core_args) }
 
 ds_app (HsAppType arg_ty fun _) hs_args core_args
   = ds_lapp fun hs_args (Type arg_ty : core_args)
@@ -794,6 +810,7 @@ ds_app_finish fun_id core_args
              free_dicts = exprsFreeVarsList
                             [ e | (e,pi_bndr) <- core_args `zip` fst (splitPiTys fun_ty)
                                 , isInvisibleAnonPiTyBinder pi_bndr ]
+             core_args' = filter (not . shouldSkipCoreArg)  core_args
 
              fun | Just unspecables <- mb_unspecables
                  , not (isEmptyVarSet unspecables)  -- Fast path
@@ -802,7 +819,7 @@ ds_app_finish fun_id core_args
                  | otherwise
                  = Var fun_id
 
-       ; return (mkCoreApps fun core_args) }
+       ; return (mkCoreApps fun core_args') }
 
 ---------------
 ds_app_rec_sel :: Id             -- The record selector Id itself

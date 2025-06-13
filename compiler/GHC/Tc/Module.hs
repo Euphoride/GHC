@@ -80,7 +80,6 @@ import GHC.Tc.Utils.TcType
 import GHC.Tc.Solver
 import GHC.Tc.TyCl
 import GHC.Tc.Instance.Typeable ( mkTypeableBinds )
-import GHC.Tc.Instance.Matchable ( mkMatchableBinds )
 import GHC.Tc.Utils.Backpack
 import GHC.Tc.Zonk.TcType
 
@@ -1647,9 +1646,9 @@ invalidAbsDataSubTypes = execWriter . go
       = mapM_ go tys
     go ty@(ForAllTy{})
       = invalid ty
-    go ty@(FunTy af w t1 t2)
+    go ty@(FunTy af w m t1 t2)
       | af == FTF_T_T
-      = do { go w
+      = do { go w ; go m
            ; go (typeKind t1) ; go t1
            ; go (typeKind t2) ; go t2
            }
