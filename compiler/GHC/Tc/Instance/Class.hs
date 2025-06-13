@@ -5,7 +5,9 @@ module GHC.Tc.Instance.Class (
      ClsInstResult(..),
      InstanceWhat(..), safeOverlap, instanceReturnsDictCon,
      AssocInstInfo(..), isNotAssociated,
-     lookupHasFieldLabel
+     lookupHasFieldLabel,
+     matchMatchable,
+     isMatchableTyCon
   ) where
 
 import GHC.Prelude
@@ -44,7 +46,7 @@ import GHC.Core.Predicate
 import GHC.Core.Coercion
 import GHC.Core.InstEnv
 import GHC.Core.Type
-import GHC.Core.Make ( mkCharExpr, mkNaturalExpr, mkStringExprFS, mkCoreLams )
+import GHC.Core.Make ( mkCharExpr, mkNaturalExpr, mkStringExprFS, mkCoreLams, mkCoreConApps )
 import GHC.Core.DataCon
 import GHC.Core.TyCon
 import GHC.Core.Class
@@ -149,6 +151,7 @@ matchGlobalInst dflags short_cut clas tys mb_loc
   | cls_name == knownCharClassName     = matchKnownChar   dflags short_cut clas tys
   | isCTupleClass clas                 = matchCTuple                       clas tys
   | cls_name == typeableClassName      = matchTypeable                     clas tys
+  | cls_name == matchableClassName     = matchMatchable                    clas tys
   | cls_name == withDictClassName      = matchWithDict                          tys
   | cls_name == dataToTagClassName     = matchDataToTag                    clas tys
   | cls_name == hasFieldClassName      = matchHasField    dflags short_cut clas tys mb_loc
@@ -936,6 +939,7 @@ matchDataToTag dataToTagClass [levity, dty] = do
             methodCo = mkFunCo Representational
                                FTF_T_T
                                (mkNomReflCo ManyTy)
+                               (mkNomReflCo matchableDataConTy)
                                (mkSymCo repCo)
                                (mkReflCo Representational intPrimTy)
             dataToTagDataCon = tyConSingleDataCon (classTyCon dataToTagClass)
@@ -956,9 +960,28 @@ matchDataToTag _ _ = pure NoInstance
 
 {- ********************************************************************
 *                                                                     *
-                   Class lookup for Typeable
+                Class lookup for Typeable & Matchable
 *                                                                     *
 ***********************************************************************-}
+
+
+isMatchableTyCon :: TyCon -> Role -> Bool
+isMatchableTyCon tc role = isInjectiveTyCon tc role && isGenerativeTyCon tc role
+
+-- !FLAG -> What role here?
+matchMatchable :: Class -> [Type] -> TcM ClsInstResult
+matchMatchable cls [blah, CastTy ty' _] = matchMatchable cls [blah, ty']
+matchMatchable cls [_, ty] = case (tcSplitTyConApp_maybe ty) of
+  Just (tycon, _) | isMatchableTyCon tycon Nominal ->
+      return $ OneInst { cir_new_theta = []
+                       , cir_mk_ev = \_ -> EvExpr (mkCoreConApps (classDataCon cls) [Type (typeKind ty), Type ty])
+                       , cir_canonical = EvCanonical
+                       , cir_what = BuiltinInstance }
+  _ -> do {
+    traceTc ("matchMatchable: Could not determine instance of matchable.") (ppr ty)
+    ; return NoInstance }
+matchMatchable _ _   = return NoInstance
+
 
 -- | Assumes that we've checked that this is the 'Typeable' class,
 -- and it was applied to the correct argument.
@@ -968,7 +991,7 @@ matchTypeable clas [k,t]  -- clas = Typeable
   | isForAllTy k = return NoInstance
 
   -- Functions; but only with a visible argment
-  | Just (af,mult,arg,ret) <- splitFunTy_maybe t
+  | Just (af,mult,_,arg,ret) <- splitFunTy_maybe t
   = if isVisibleFunArg af
     then doFunTy clas t mult arg ret
     else return NoInstance

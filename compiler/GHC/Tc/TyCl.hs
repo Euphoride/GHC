@@ -4113,7 +4113,7 @@ tcConDecl new_or_data dd_info rep_tycon tc_bndrs _res_kind tag_map
                     (mkInvisForAllTys outer_tv_bndrs $
                      tcMkPhiTy ctxt                  $
                      tcMkScaledFunTys arg_tys        $
-                     res_ty)
+                     res_ty)  
        ; traceTc "tcConDecl:GADT" (ppr names $$ ppr res_ty $$ ppr tkvs)
        ; reportUnsolvedEqualities skol_info tkvs tclvl wanted
 
@@ -5769,8 +5769,8 @@ checkValidRoles tc
       =  check_ty_roles env role    ty1
       >> check_ty_roles env Nominal ty2
 
-    check_ty_roles env role (FunTy _ w ty1 ty2)
-      =  check_ty_roles env Nominal w
+    check_ty_roles env role (FunTy _ w m ty1 ty2)
+      =  check_ty_roles env Nominal w >> check_ty_roles env Nominal m
       >> check_ty_roles env role ty1
       >> check_ty_roles env role ty2
 

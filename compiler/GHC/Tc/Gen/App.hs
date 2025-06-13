@@ -2025,11 +2025,12 @@ qlUnify ty1 ty2
     -- But for the latter we only learn instantiation info from res1~res2
     -- We look at the multiplicity too, although the chances of getting
     -- impredicative instantiation info from there seems...remote.
-    go (FunTy { ft_af = af1, ft_arg = arg1, ft_res = res1, ft_mult = mult1 })
-       (FunTy { ft_af = af2, ft_arg = arg2, ft_res = res2, ft_mult = mult2 })
+    go (FunTy { ft_af = af1, ft_arg = arg1, ft_res = res1, ft_mult = mult1, ft_mat = mat1 })
+       (FunTy { ft_af = af2, ft_arg = arg2, ft_res = res2, ft_mult = mult2, ft_mat = mat2})
       | af1 == af2 -- Match the arrow TyCon
       = do { when (isVisibleFunArg af1) (go arg1 arg2)
            ; when (isFUNArg af1)        (go mult1 mult2)
+           ; when (isFUNArg af1)        (go mat1 mat2)
            ; go res1 res2 }
 
     -- ToDo: c.f. Tc.Utils.unify.uType,
@@ -2330,7 +2331,7 @@ rejectRepPolyNewtypes (fun,_) app_res_rho = case fun of
     -- representation-polymorphic newtype constructor.
     | isNewDataCon con
     , not $ tcHasFixedRuntimeRep $ dataConTyCon con
-    , Just (_rem_arg_af, _rem_arg_mult, rem_arg_ty, _nt_res_ty)
+    , Just (_rem_arg_af, _rem_arg_mult, _, rem_arg_ty, _nt_res_ty)
         <- splitFunTy_maybe app_res_rho
     -> do { let frr_ctxt = FRRRepPolyUnliftedNewtype con
           ; hasFixedRuntimeRep_syntactic frr_ctxt rem_arg_ty }

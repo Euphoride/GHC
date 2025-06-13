@@ -34,6 +34,7 @@ import GHC.Core.Unify    ( tcMatchTyKis )
 import GHC.Core.Predicate
 import GHC.Core.Type
 import GHC.Core.TyCo.Tidy
+import GHC.Core.TyCo.Rep ( templateMatchabilityVar )
 
 import GHC.Types.DefaultEnv ( ClassDefaults (..), defaultList )
 import GHC.Types.Unique.Set
@@ -191,6 +192,10 @@ defaultTyVarTcS the_tv
   = do { traceTcS "defaultTyVarTcS Multiplicity" (ppr the_tv)
        ; unifyTyVar the_tv ManyTy
        ; return didUnification }
+  | isMatchabilityVar the_tv
+  = do { traceTcS "defaultTyVarTcS Matchability" (ppr the_tv)
+       ; unifyTyVar the_tv matchableDataConTy
+       ; return didUnification }
   | otherwise
   = return noUnification  -- the common case
 
@@ -280,7 +285,7 @@ unsatisfiableEvExpr (unsat_ev, given_msg) wtd_ty
          -- for a description of what evidence term we are constructing here.
 
        ; let -- (##) -=> wtd_ty
-             fun_ty = mkFunTy visArgConstraintLike ManyTy unboxedUnitTy wtd_ty
+             fun_ty = mkFunTy visArgConstraintLike ManyTy matchableDataConTy unboxedUnitTy wtd_ty
              mkDictBox = case boxingDataCon fun_ty of
                BI_Box { bi_data_con = mkDictBox } -> mkDictBox
                _ -> pprPanic "unsatisfiableEvExpr: no DictBox!" (ppr wtd_ty)

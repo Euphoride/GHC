@@ -56,7 +56,7 @@ module GHC.Tc.Gen.HsType (
         tcHsLiftedTypeNC, tcHsOpenTypeNC,
         tcInferLHsType, tcInferLHsTypeKind, tcInferLHsTypeUnsaturated,
         tcCheckLHsTypeInContext, tcCheckLHsType,
-        tcHsContext, tcLHsPredType,
+        tcHsContext, tcLHsPredType, quantifyMatchabilites, collectBndrs, runStateM,
 
         kindGeneralizeAll,
 
@@ -138,10 +138,42 @@ import GHC.Data.Bag( unitBag )
 import Data.Function ( on )
 import Data.List.NonEmpty ( NonEmpty(..), nonEmpty )
 import qualified Data.List.NonEmpty as NE
-import Data.List ( mapAccumL )
+import Data.List ( mapAccumL, nub )
 import Control.Monad
 import Data.Tuple( swap )
 import GHC.Types.SourceText
+
+
+newtype StateM s a = StateM (s -> (a, s))
+
+instance Functor (StateM s) where
+  fmap f (StateM g) = StateM $ \s -> let (a, s') = g s in (f a, s')
+
+instance Applicative (StateM s) where
+  pure a = StateM $ \s -> (a, s)
+  StateM f <*> StateM g = StateM $ \s -> 
+    let (fab, s') = f s
+        (a, s'') = g s'
+    in (fab a, s'')
+
+instance Monad (StateM s) where
+  StateM g >>= f = StateM $ \s ->
+    let (a, s') = g s
+        StateM h = f a
+    in h s'
+
+runStateM :: StateM s a -> s -> (a, s)
+runStateM (StateM f) = f
+
+get :: StateM s s
+get = StateM $ \s -> (s, s)
+
+put :: s -> StateM s ()
+put s = StateM $ \_ -> ((), s)
+
+modify :: (s -> s) -> StateM s ()
+modify f = StateM $ \s -> ((), f s)
+
 
 {-
         ----------------------------
@@ -486,9 +518,9 @@ tc_lhs_sig_type skol_info full_hs_ty@(L loc (HsSig { sig_bndrs = hs_outer_bndrs
 
        ; let outer_tv_bndrs :: [InvisTVBinder] = outerTyVarBndrs outer_bndrs
              ty1 = mkInvisForAllTys outer_tv_bndrs ty
-       ; kvs <- kindGeneralizeSome skol_info wanted ty1
 
-       -- Build an implication for any as-yet-unsolved kind equalities
+       ; traceTc "tc_lhs_sig_type 2" (ppr ty1)
+       ; kvs <- kindGeneralizeSome skol_info wanted ty1       -- Build an implication for any as-yet-unsolved kind equalities
        -- See Note [Skolem escape in type signatures]
        ; implic <- buildTvImplication (getSkolemInfo skol_info) kvs tc_lvl wanted
 
@@ -583,6 +615,56 @@ c.f. see also Note [Skolem escape and forall-types]. The difference
 is that we don't need to simplify at a forall type, only at the
 top level of a signature.
 -}
+collectBndrs :: Type -> StateM [TyVar] Type
+collectBndrs (ForAllTy bndr ty) = do
+  ty' <- collectBndrs ty
+
+  seen_tvs <- get_and_reset
+
+  return $ ForAllTy bndr (top_level (ty', seen_tvs))
+
+collectBndrs (TyVarTy tv) = return (TyVarTy tv)
+collectBndrs (LitTy lit) = return (LitTy lit)
+collectBndrs (CoercionTy co) = return (CoercionTy co)
+
+collectBndrs (AppTy t1 t2) = AppTy <$> collectBndrs t1 <*> collectBndrs t2
+collectBndrs (TyConApp tc args) = TyConApp tc <$> mapM collectBndrs args
+collectBndrs (FunTy af mult mat arg res) = do
+  case get_tv mat of
+    Just tv -> seen tv
+    Nothing -> return ()
+
+  FunTy af mult mat <$> collectBndrs arg <*> collectBndrs res
+collectBndrs (CastTy ty co) = do
+  ty' <- collectBndrs ty
+  return $ CastTy ty' co
+
+get_and_reset :: StateM [TyVar] [TyVar]
+get_and_reset = do
+  tvs <- get
+  put []
+  return $ nub tvs
+
+get_tv :: Type -> Maybe TyVar
+get_tv (TyVarTy tv) = Just tv
+get_tv _ = Nothing
+
+seen :: TyVar -> StateM [TyVar] ()
+seen tv = modify (tv:)
+
+
+top_level :: (Type, [TyVar]) -> Type
+top_level (ty, tvs) = mkInvisForAllTys (map (\tv -> Bndr tv SpecifiedSpec) tvs) ty
+
+-- The idea here is that we recurse through Type's structure. If we see a FunTy, we should
+-- grab the matchability tyvar associated with the FunTy if it is a tyvar. So we accumulate
+-- this list of tyvars. Then, if we see a forall, we embed inside the forall's body another forall
+-- being for the binders for the matchability tyvars. 
+-- if we're at the top level and still have those tyvars then add those binders too
+quantifyMatchabilites :: Type -> TcM Type
+quantifyMatchabilites tv = return . top_level $ runStateM (collectBndrs tv) []
+
+
 
 -- Does validity checking and zonking.
 tcStandaloneKindSig :: LStandaloneKindSig GhcRn -> TcM (Name, Kind)
@@ -604,8 +686,7 @@ tc_top_lhs_type :: TypeOrKind -> UserTypeCtxt -> LHsSigType GhcRn -> TcM Type
 -- tc_top_lhs_type is used for kind-checking top-level LHsSigTypes where
 --   we want to fully solve /all/ equalities, and report errors
 -- Does zonking, but not validity checking because it's used
---   for things (like deriving and instances) that aren't
---   ordinary types
+--   for things (like deriving and instances) that aren't--   ordinary types
 -- Used for both types and kinds
 tc_top_lhs_type tyki ctxt (L loc sig_ty@(HsSig { sig_bndrs = hs_outer_bndrs
                                                , sig_body = body }))
@@ -619,9 +700,11 @@ tc_top_lhs_type tyki ctxt (L loc sig_ty@(HsSig { sig_bndrs = hs_outer_bndrs
                       tc_check_lhs_type (mkMode tyki) body kind }
 
        ; outer_bndrs <- scopedSortOuter outer_bndrs
+
        ; let outer_tv_bndrs = outerTyVarBndrs outer_bndrs
              ty1 = mkInvisForAllTys outer_tv_bndrs ty
 
+       ; traceTc "tc_lhs_sig_type 2" (ppr ty1)
        ; kvs <- kindGeneralizeAll skol_info ty1  -- "All" because it's a top-level type
        ; reportUnsolvedEqualities skol_info kvs tclvl wanted
 
@@ -1104,7 +1187,10 @@ substitution to each HsCoreTy and all is well:
 ------------------------------------------
 tcCheckLHsType :: LHsType GhcRn -> TcKind -> TcM TcType
 tcCheckLHsType hs_ty exp_kind
-  = tc_check_lhs_type typeLevelMode hs_ty exp_kind
+  = do
+    ty <- tc_check_lhs_type typeLevelMode hs_ty exp_kind
+    ty' <- quantifyMatchabilites ty
+    return ty
 
 tc_check_lhs_type :: TcTyMode -> LHsType GhcRn -> TcKind -> TcM TcType
 tc_check_lhs_type mode (L span ty) exp_kind

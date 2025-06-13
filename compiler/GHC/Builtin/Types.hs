@@ -156,6 +156,15 @@ module GHC.Builtin.Types (
 
         unrestrictedFunTyCon, unrestrictedFunTyConName,
 
+
+        -- * Matchability
+
+        matchabilityTyConName, matchableDataConName, unmatchableDataConName,
+        matchabilityTy, matchabilityTyCon,
+        matchableDataCon, unmatchableDataCon,
+        matchableDataConTy, unmatchableDataConTy,
+        matchableDataConTyCon, unmatchableDataConTyCon,
+
         -- * Bignum
         integerTy, integerTyCon, integerTyConName,
         integerISDataCon, integerISDataConName,
@@ -322,6 +331,7 @@ wiredInTyCons = map (dataConTyCon . snd) boxingDataCons
                 , unliftedTypeKindTyCon
                 , unrestrictedFunTyCon
                 , multiplicityTyCon
+                , matchabilityTyCon
                 , naturalTyCon
                 , integerTyCon
                 , liftedRepTyCon
@@ -1818,6 +1828,10 @@ mk_ctuple_class tycon sc_theta sc_sel_ids
 data Multiplicity = One | Many
 -}
 
+matchabilityTyConName :: Name 
+matchabilityTyConName = mkWiredInTyConName UserSyntax gHC_TYPES (fsLit "Matchability")
+                          matchabilityTyConKey matchabilityTyCon
+
 multiplicityTyConName :: Name
 multiplicityTyConName = mkWiredInTyConName UserSyntax gHC_TYPES (fsLit "Multiplicity")
                           multiplicityTyConKey multiplicityTyCon
@@ -1826,16 +1840,31 @@ oneDataConName, manyDataConName :: Name
 oneDataConName  = mkWiredInDataConName UserSyntax gHC_TYPES (fsLit "One") oneDataConKey oneDataCon
 manyDataConName = mkWiredInDataConName UserSyntax gHC_TYPES (fsLit "Many") manyDataConKey manyDataCon
 
+matchableDataConName, unmatchableDataConName :: Name
+matchableDataConName = mkWiredInDataConName UserSyntax gHC_TYPES (fsLit "M") matchableDataConKey matchableDataCon
+unmatchableDataConName = mkWiredInDataConName UserSyntax gHC_TYPES (fsLit "U") unmatchableDataConKey unmatchableDataCon
+
 multiplicityTy :: Type
 multiplicityTy = mkTyConTy multiplicityTyCon
+
+matchabilityTy :: Type
+matchabilityTy = mkTyConTy matchabilityTyCon
 
 multiplicityTyCon :: TyCon
 multiplicityTyCon = pcTyCon multiplicityTyConName Nothing []
                             [oneDataCon, manyDataCon]
 
+matchabilityTyCon :: TyCon
+matchabilityTyCon = pcTyCon matchabilityTyConName Nothing []
+                            [matchableDataCon, unmatchableDataCon]
+
 oneDataCon, manyDataCon :: DataCon
 oneDataCon = pcDataCon oneDataConName [] [] multiplicityTyCon
 manyDataCon = pcDataCon manyDataConName [] [] multiplicityTyCon
+
+matchableDataCon, unmatchableDataCon :: DataCon
+matchableDataCon = pcDataCon matchableDataConName [] [] matchabilityTyCon
+unmatchableDataCon = pcDataCon unmatchableDataConName [] [] matchabilityTyCon
 
 oneDataConTy, manyDataConTy :: Type
 oneDataConTy = mkTyConTy oneDataConTyCon
@@ -1844,6 +1873,14 @@ manyDataConTy = mkTyConTy manyDataConTyCon
 oneDataConTyCon, manyDataConTyCon :: TyCon
 oneDataConTyCon = promoteDataCon oneDataCon
 manyDataConTyCon = promoteDataCon manyDataCon
+
+matchableDataConTy, unmatchableDataConTy :: Type
+matchableDataConTy = mkTyConTy matchableDataConTyCon
+unmatchableDataConTy = mkTyConTy unmatchableDataConTyCon
+
+matchableDataConTyCon, unmatchableDataConTyCon :: TyCon
+matchableDataConTyCon = promoteDataCon matchableDataCon
+unmatchableDataConTyCon = promoteDataCon unmatchableDataCon
 
 multMulTyConName :: Name
 multMulTyConName =
@@ -1860,11 +1897,11 @@ multMulTyCon = mkFamilyTyCon multMulTyConName binders multiplicityTy Nothing
 ------------------------
 -- type (->) :: forall (rep1 :: RuntimeRep) (rep2 :: RuntimeRep).
 --              TYPE rep1 -> TYPE rep2 -> Type
--- type (->) = FUN 'Many
+-- type (->) = FUN 'Many 'Match                           (for now -> i need to change this to polymorphic)
 unrestrictedFunTyCon :: TyCon
 unrestrictedFunTyCon
   = buildSynTyCon unrestrictedFunTyConName [] arrowKind []
-                  (TyCoRep.TyConApp fUNTyCon [manyDataConTy])
+                  (TyCoRep.TyConApp fUNTyCon [manyDataConTy, matchableDataConTy])
   where
     arrowKind = mkTyConKind binders liftedTypeKind
     -- See also funTyCon

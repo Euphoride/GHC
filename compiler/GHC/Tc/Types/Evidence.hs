@@ -87,6 +87,8 @@ import GHC.Core.Multiplicity
 
 import qualified Data.Semigroup as S
 
+import GHC.Builtin.Types (matchabilityTy, matchableDataConTy)
+
 {-
 Note [TcCoercions]
 ~~~~~~~~~~~~~~~~~~
@@ -227,7 +229,9 @@ mkWpEta xs wrap = foldr eta_one wrap xs
 
 mk_wp_fun_co :: Mult -> TcCoercionR -> TcCoercionR -> TcCoercionR
 mk_wp_fun_co mult arg_co res_co
-  = mkNakedFunCo Representational FTF_T_T (multToCo mult) arg_co res_co
+  = mkNakedFunCo Representational FTF_T_T (multToCo mult) (mat_co) arg_co res_co
+  where
+    mat_co = mkReflCo Nominal matchableDataConTy
     -- FTF_T_T: WpFun is always (->)
 
 mkWpCastR :: TcCoercionR -> HsWrapper

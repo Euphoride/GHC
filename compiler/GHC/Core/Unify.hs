@@ -261,6 +261,7 @@ To achieve this, `go_fam` in `uVarOrFam` does this;
 
 
 Wrinkles
+-- !FLAG -> Change this here for the apartness check
 
 (ATF0) Once we encounter a type-family application, we only ever return
              MaybeApart   or   SurelyApart
@@ -1552,6 +1553,10 @@ unify_ty env ty1 (CastTy ty2 co2) kco
   = unify_ty env ty1 ty2 (kco `mkTransCo` mkSymCo co2)
     -- NB: co2 does not mention forall-bound variables
 
+
+-- unify_ty env t1@(AppTy t ts) t2@(AppTy t' ts') _kco
+--   | BindMe <- um_bind_fam_fun env (tyConAppTyCon t) [t] t = maybeApart MARTypeFamily
+
 -- Applications need a bit of care!
 -- They can match FunTy and TyConApp, so use splitAppTy_maybe
 unify_ty env (AppTy ty1a ty1b) ty2 _kco
@@ -1577,7 +1582,7 @@ unify_ty env (CoercionTy co1) (CoercionTy co2) kco
            CoVarCo cv
              | not (um_unif env)
              , not (cv `elemVarEnv` c_subst)   -- Not forall-bound
-             , let (_mult_co, co_l, co_r) = decomposeFunCo kco
+             , let (_, _, co_l, co_r) = decomposeFunCo kco
                      -- Because the coercion is used in a type, it should be safe to
                      -- ignore the multiplicity coercion, _mult_co
                       -- cv :: t1 ~ t2
@@ -1886,6 +1891,28 @@ uVarOrFam env ty1 ty2 kco
       = return ()
 
       | otherwise
+       -- !FLAG -> There's really only one question for me atm: tf is binding?
+       -- ! Otherwise, yeah, they decompose here to unify regardless of if F is injective
+       -- ! and non-injectivity comes into play in demoting sure apartness.
+       -- ! so in theory i can allow f a ~ g b to just unify. although writing that makes me
+       -- ! queasy. but from what i understand, i just need to find an alternative way to 
+       -- ! prevent unsat tyfams from coming up there.
+
+
+{-
+Okay. Here's my write up:
+
+The inst env head check says always bind. It's to force those
+tyfam unifications to scream maybe apart. We don't always want that
+(apparently) but in this case we do. Suggests to me that we do the same
+with the appty-appty, if it binds then maybe apart and if not we unify.
+
+With the maybe apart, try first without doing substitution jazz and then 
+if it fails, try with as an experiment. 
+
+  God willing that doesn't break anything.
+-}
+
        -- Decompose (F tys1 ~ F tys2): (ATF9)
        -- Use injectivity information of F: (ATF10)
        -- But first bind the type-fam if poss: (ATF11)
@@ -2245,10 +2272,10 @@ ty_co_match menv subst ty1 (AppCo co2 arg2) _lkco _rkco
 ty_co_match menv subst (TyConApp tc1 tys) (TyConAppCo _ tc2 cos) _lkco _rkco
   = ty_co_match_tc menv subst tc1 tys tc2 cos
 
-ty_co_match menv subst (FunTy { ft_mult = w, ft_arg = ty1, ft_res = ty2 })
-            (FunCo { fco_mult = co_w, fco_arg = co1, fco_res = co2 }) _lkco _rkco
-  = ty_co_match_args menv subst [w,    rep1,    rep2,    ty1, ty2]
-                                [co_w, co1_rep, co2_rep, co1, co2]
+ty_co_match menv subst (FunTy { ft_mult = w, ft_arg = ty1, ft_res = ty2, ft_mat = mat })
+            (FunCo { fco_mult = co_w, fco_arg = co1, fco_res = co2, fco_mat = co_m }) _lkco _rkco
+  = ty_co_match_args menv subst [w,    mat,  rep1,    rep2,    ty1, ty2]
+                                [co_w, co_m, co1_rep, co2_rep, co1, co2]
   where
      rep1    = getRuntimeRep ty1
      rep2    = getRuntimeRep ty2
@@ -2360,8 +2387,8 @@ pushRefl co =
   case (isReflCo_maybe co) of
     Just (AppTy ty1 ty2, Nominal)
       -> Just (AppCo (mkReflCo Nominal ty1) (mkNomReflCo ty2))
-    Just (FunTy af w ty1 ty2, r)
-      ->  Just (FunCo r af af (mkReflCo r w) (mkReflCo r ty1) (mkReflCo r ty2))
+    Just (FunTy af w m ty1 ty2, r)
+      ->  Just (FunCo r af af (mkReflCo r w) (mkReflCo r m) (mkReflCo r ty1) (mkReflCo r ty2))
     Just (TyConApp tc tys, r)
       -> Just (TyConAppCo r tc (zipWith mkReflCo (tyConRoleListX r tc) tys))
     Just (ForAllTy (Bndr tv vis) ty, r)

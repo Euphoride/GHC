@@ -39,6 +39,8 @@ module GHC.Internal.Types (
         -- * Type equality
         type (~), type (~~), Coercible,
 
+        Matchable,
+
         -- * Representation polymorphism
         TYPE, CONSTRAINT,
         Levity(..), RuntimeRep(..),
@@ -58,6 +60,8 @@ module GHC.Internal.Types (
 
         -- * Multiplicity types
         Multiplicity(..), MultMul,
+
+        Matchability(..),
 
         -- * Runtime type representation
         Module(..), TrName(..), TyCon(..), TypeLitSort(..),
@@ -222,7 +226,7 @@ This declaration is important for :info (->) command (issue #10145)
 -}
 
 -- | The regular function type
-type (->) = FUN 'Many
+type (->) = FUN 'Many 'M
 -- See Note [Linear types] in Multiplicity
 
 {- *********************************************************************
@@ -259,6 +263,8 @@ type ZeroBitType = TYPE ZeroBitRep
 
 -------------------------
 data Multiplicity = Many | One
+
+data Matchability = M | U
 
 type family MultMul (a :: Multiplicity) (b :: Multiplicity) :: Multiplicity where
   MultMul 'One x = x
@@ -649,6 +655,11 @@ infix 4 ~, ~~
 class Coercible (a :: k) (b :: k)
   -- See also Note [The equality types story] in GHC.Builtin.Types.Prim
 
+
+-- | Class for matchable type constructors. This allows the constraint solver
+-- to decompose types like @f a ~ f b@ into @a ~ b@ when @f@ is known to be matchable.
+-- A type constructor is matchable if it is injective and geneerative.
+class Matchable (f :: k)
 {- *********************************************************************
 *                                                                      *
                    Bool, and isTrue#

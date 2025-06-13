@@ -796,11 +796,12 @@ subst_ty subst ty
                                -- mkTyConApp has optimizations.
                                -- See Note [Using synonyms to compress types]
                                -- in GHC.Core.Type
-    go ty@(FunTy { ft_mult = mult, ft_arg = arg, ft_res = res })
+    go ty@(FunTy { ft_mult = mult, ft_arg = arg, ft_res = res, ft_mat = mat })
       = let !mult' = go mult
             !arg' = go arg
             !res' = go res
-        in ty { ft_mult = mult', ft_arg = arg', ft_res = res' }
+            !mat' = go mat
+        in ty { ft_mult = mult', ft_arg = arg', ft_res = res', ft_mat = mat' }
     go (ForAllTy (Bndr tv vis) ty)
                          = case substVarBndrUnchecked subst tv of
                              (subst', tv') ->
@@ -891,7 +892,7 @@ subst_co subst co
       = case substForAllCoBndrUnchecked subst tv kind_co of
          (subst', tv', kind_co') ->
           ((mkForAllCo $! tv') visL visR $! kind_co') $! subst_co subst' co
-    go (FunCo r afl afr w co1 co2)   = ((mkFunCo2 r afl afr $! go w) $! go co1) $! go co2
+    go (FunCo r afl afr w m co1 co2)   = (((mkFunCo2 r afl afr $! go w) $! go m) $! go co1) $! go co2
     go (CoVarCo cv)          = substCoVar subst cv
     go (UnivCo { uco_prov = p, uco_role = r
                , uco_lty = t1, uco_rty = t2, uco_deps = deps })

@@ -167,8 +167,8 @@ hieTypeToIface = foldType go
     go (HLitTy l) = IfaceLitTy l
     go (HForAllTy ((n,k),af) t) = let b = (mkIfLclName (occNameFS $ getOccName n), k)
                                   in IfaceForAllTy (Bndr (IfaceTvBndr b) af) t
-    go (HFunTy w a b)   = IfaceFunTy visArgTypeLike   w       a    b
-    go (HQualTy pred b) = IfaceFunTy invisArgTypeLike many_ty pred b
+    go (HFunTy w m a b)   = IfaceFunTy visArgTypeLike   w m      a    b
+    go (HQualTy m pred b) = IfaceFunTy invisArgTypeLike many_ty m pred b
     go (HCastTy a) = a
     go HCoercionTy = IfaceTyVar (mkIfLclName "<coercion type>")
     go (HTyConApp a xs) = IfaceTyConApp a (hieToIfaceArgs xs)
@@ -243,13 +243,14 @@ getTypeIndex t
       k <- getTypeIndex (varType v)
       i <- getTypeIndex t
       return $ HForAllTy ((varName v,k),a) i
-    go (FunTy { ft_af = af, ft_mult = w, ft_arg = a, ft_res = b }) = do
+    go (FunTy { ft_af = af, ft_mult = w, ft_arg = a, ft_res = b, ft_mat = m }) = do
       ai <- getTypeIndex a
       bi <- getTypeIndex b
       wi <- getTypeIndex w
+      mi <- getTypeIndex m
       return $ if isInvisibleFunArg af
-               then assert (isManyTy w) $ HQualTy ai bi
-               else                       HFunTy wi ai bi
+               then assert (isManyTy w) $ HQualTy mi ai bi
+               else                       HFunTy wi mi ai bi
     go (LitTy a) = return $ HLitTy $ toIfaceTyLit a
     go (CastTy t _) = do
       i <- getTypeIndex t

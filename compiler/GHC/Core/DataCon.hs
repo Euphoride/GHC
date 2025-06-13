@@ -75,6 +75,7 @@ import Language.Haskell.Syntax.Basic
 import Language.Haskell.Syntax.Module.Name
 
 import {-# SOURCE #-} GHC.Types.Id.Make ( DataConBoxer )
+import GHC.Core.TyCo.Rep (Type(..), mkMatchableInvisFunTys)
 import GHC.Core.Type as Type
 import GHC.Core.Coercion
 import GHC.Core.Unify
@@ -113,6 +114,8 @@ import qualified Data.Data as Data
 import Data.Char
 import Data.List( find )
 import Control.DeepSeq
+import {-# SOURCE #-} GHC.Builtin.Types (matchableDataConTy)
+
 
 {-
 Note [Data constructor representation]
@@ -1575,8 +1578,8 @@ dataConWrapperType (MkData { dcUserTyVarBinders = user_tvbs,
                              dcOrigResTy = res_ty,
                              dcStupidTheta = stupid_theta })
   = mkInvisForAllTys user_tvbs $
-    mkInvisFunTys (stupid_theta ++ theta) $
-    mkScaledFunTys arg_tys $
+    mkMatchableInvisFunTys (stupid_theta ++ theta) $
+    mkScaledFunctionTys arg_tys $
     res_ty
 
 dataConNonlinearType :: DataCon -> Type
@@ -1587,8 +1590,8 @@ dataConNonlinearType (MkData { dcUserTyVarBinders = user_tvbs,
                                dcOrigResTy = res_ty,
                                dcStupidTheta = stupid_theta })
   = mkInvisForAllTys user_tvbs $
-    mkInvisFunTys (stupid_theta ++ theta) $
-    mkScaledFunTys arg_tys' $
+    mkMatchableInvisFunTys (stupid_theta ++ theta) $
+    mkScaledFunctionTys arg_tys' $
     res_ty
   where
     arg_tys' = map (\(Scaled w t) -> Scaled (case w of OneTy -> ManyTy; _ -> w) t) arg_tys

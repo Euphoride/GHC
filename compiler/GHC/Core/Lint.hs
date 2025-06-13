@@ -1556,7 +1556,7 @@ lintTyApp fun_ty arg_ty
 lintValApp :: CoreExpr -> OutType -> OutType -> UsageEnv -> UsageEnv
            -> LintM (OutType, UsageEnv)
 lintValApp arg fun_ty arg_ty fun_ue arg_ue
-  | Just (_, w, arg_ty', res_ty') <- splitFunTy_maybe fun_ty
+  | Just (_, w, _, arg_ty', res_ty') <- splitFunTy_maybe fun_ty
   = do { ensureEqTys arg_ty' arg_ty (mkAppMsg arg_ty' arg_ty arg)
        ; let app_ue =  addUE fun_ue (scaleUE w arg_ue)
        ; return (res_ty', app_ue) }
@@ -1991,10 +1991,11 @@ lintType ty@(TyConApp tc tys)
 
 -- arrows can related *unlifted* kinds, so this has to be separate from
 -- a dependent forall.
-lintType ty@(FunTy af tw t1 t2)
+lintType ty@(FunTy af tw tm t1 t2)
   = do { lintType t1
        ; lintType t2
        ; lintType tw
+       ; lintType tm
        ; lintArrow (text "type or kind" <+> quotes (ppr ty)) af t1 t2 tw }
 
 lintType ty@(ForAllTy {})
@@ -2179,7 +2180,7 @@ lintApp msg lint_forall_arg lint_arrow_arg !orig_fun_ty all_args acc
                                 2 (ppr arg' <+> dcolon <+> ppr karg'))
                       ; go subst' body_ty acc args }
 
-               go subst fun_ty@(FunTy _ mult exp_arg_ty res_ty) acc (arg:args)
+               go subst fun_ty@(FunTy _ mult mat exp_arg_ty res_ty) acc (arg:args)
                  = do { (arg_ty, acc') <- lint_arrow_arg arg (substTy subst mult) acc
                       ; ensureEqTys (substTy subst exp_arg_ty) arg_ty $
                         lint_app_fail_msg msg orig_fun_ty all_args

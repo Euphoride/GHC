@@ -821,12 +821,13 @@ synifyType _ vs ty@(AppTy{}) =
             ty_args
    in
     foldl (\t1 t2 -> noLocA $ HsAppTy noExtField t1 t2) ty_head' ty_args'
-synifyType s vs funty@(FunTy af w t1 t2)
+synifyType s vs funty@(FunTy af w m t1 t2)
   | isInvisibleFunArg af = synifySigmaType s vs funty
   | otherwise = noLocA $ HsFunTy noExtField w' s1 s2
   where
     s1 = synifyType WithinType vs t1
     s2 = synifyType WithinType vs t2
+    m' = synifyType WithinType vs m
     w' = synifyMultArrow vs w
 synifyType s vs forallty@(ForAllTy (Bndr _ argf) _ty) =
   case argf of
@@ -976,8 +977,8 @@ noKindTyVars ts ty
             _ -> noKindTyVars ts f
        in unionVarSets (func : args)
 noKindTyVars ts (ForAllTy _ t) = noKindTyVars ts t
-noKindTyVars ts (FunTy _ w t1 t2) =
-  noKindTyVars ts w
+noKindTyVars ts (FunTy _ w m t1 t2) =
+  noKindTyVars ts w `unionVarSet` noKindTyVars ts m
     `unionVarSet` noKindTyVars ts t1
     `unionVarSet` noKindTyVars ts t2
 noKindTyVars ts (CastTy t _) = noKindTyVars ts t
@@ -1167,6 +1168,6 @@ tcSplitPhiTyPreserveSynonyms ty0 = split ty0 []
 
 -- | See Note [Invariant: Never expand type synonyms]
 tcSplitPredFunTyPreserveSynonyms_maybe :: Type -> Maybe (PredType, Type)
-tcSplitPredFunTyPreserveSynonyms_maybe (FunTy af _ arg res)
+tcSplitPredFunTyPreserveSynonyms_maybe (FunTy af _ _ arg res)
   | isInvisibleFunArg af = Just (arg, res)
 tcSplitPredFunTyPreserveSynonyms_maybe _ = Nothing

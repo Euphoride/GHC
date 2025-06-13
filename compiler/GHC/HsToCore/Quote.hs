@@ -55,6 +55,7 @@ import GHC.Core
 import GHC.Core.Type( pattern ManyTy, mkFunTy )
 import GHC.Core.Make
 import GHC.Core.Utils
+import GHC.Core.TyCo.Rep ( templateMatchabilityVar )
 
 import GHC.Builtin.Names
 import GHC.Builtin.Names.TH
@@ -129,7 +130,7 @@ mkMetaWrappers q@(QuoteWrapper quote_var_raw m_var) = do
           -- the expected type
           tyvars = dataConUserTyVarBinders (classDataCon cls)
           expected_ty = mkInvisForAllTys tyvars $
-                        mkFunTy invisArgConstraintLike ManyTy
+                        mkFunTy invisArgConstraintLike ManyTy matchableDataConTy
                                 (mkClassPred cls (mkTyVarTys (binderVars tyvars)))
                                 (mkClassPred monad_cls (mkTyVarTys (binderVars tyvars)))
 
