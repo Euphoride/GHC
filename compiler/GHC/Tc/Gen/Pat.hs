@@ -79,6 +79,8 @@ import Data.List( partition )
 import Control.Monad.Trans.Writer.CPS
 import Control.Monad.Trans.Class
 
+import GHC.Core.TyCo.Rep (Matchability(..))
+
 {-
 ************************************************************************
 *                                                                      *
@@ -1740,7 +1742,7 @@ tcConTyArg tenv penv (rn_ty, con_tv) thing_inside
           -- OK to drop coercions here. These unifications are all about
           -- guiding inference based on a user-written type annotation
           -- See Note [Type applications in patterns] (W1)
-       ; _ <- unifyType Nothing arg_ty (substTyVar tenv con_tv)
+       ; _ <- unifyType Nothing arg_ty (substTyVar tenv con_tv MaybeUnmatchable)
 
        ; result <- tcExtendNameTyVarEnv sig_wcs $
                    tcExtendNameTyVarEnv sig_ibs $

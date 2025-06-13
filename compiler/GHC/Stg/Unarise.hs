@@ -395,7 +395,8 @@ import GHC.Data.FastString (FastString, mkFastString, fsLit)
 import GHC.Types.Id
 import GHC.Types.Literal
 import GHC.Core.Make (aBSENT_SUM_FIELD_ERROR_ID)
-import GHC.Types.Id.Make (voidPrimId, voidArgId)
+import GHC.Types.Id.Make (voidPrimId, voidArgId, nullAddrId)
+import GHC.Types.Literal (nullAddrLit)
 import GHC.Utils.Monad (mapAccumLM)
 import GHC.Utils.Outputable
 import GHC.Utils.Panic
@@ -404,7 +405,7 @@ import GHC.Stg.Syntax
 import GHC.Stg.Utils
 import GHC.Stg.Make
 import GHC.Core.Type
-import GHC.Builtin.Types.Prim (intPrimTy)
+import GHC.Builtin.Types.Prim (intPrimTy, addrPrimTy)
 import GHC.Builtin.Types
 import GHC.Types.Unique.Supply
 import GHC.Types.Unique
@@ -418,6 +419,29 @@ import qualified Data.IntMap as IM
 import GHC.Builtin.PrimOps
 import GHC.Builtin.PrimOps.Casts
 import Data.List (mapAccumL)
+
+import Data.Maybe (mapMaybe)
+import GHC.Builtin.Names (matchableClassName)
+import GHC.Core
+import GHC.Core (CoreRule (..))
+import GHC.Core.Class (Class (..), className)
+import GHC.Core.Coercion (Role (..), coercionKind, mkUnivCo)
+import GHC.Core.DataCon (DataCon (..), dataConTyCon, DataConRep(..), dataConName, dataConRepStrictness, dataConRepArgTys)
+import GHC.Core.Opt.Arity (typeArity)
+import GHC.Core.Predicate (getClassPredTys_maybe)
+import GHC.Core.TyCo.Rep (Coercion (..), KindCoercion, MCoercion (..), PredType, Scaled (..), ThetaType, Type (..), UnivCoProvenance (..), mkInvisForAllTys)
+import GHC.Core.TyCon (AlgTyConFlav (..), AlgTyConRhs (..), TyCon (..),tyConClass_maybe, TyConRepName)
+import GHC.Core.Type (Scaled (..), splitCastTy_maybe, splitTyConApp_maybe)
+import GHC.Data.Pair
+import GHC.Prelude
+import GHC.Tc.Utils.TcType (TcInvisTVBinder, mkPhiTy, tcSplitForAllInvisTVBinders, tcSplitPhiTy, tcSplitPredFunTy_maybe)
+import GHC.Types.Basic
+import GHC.Types.Id (idArity, idSpecialisation, idType, idUnfolding, isDataConId_maybe, isId, setIdArity, setIdSpecialisation, setIdType, setIdUnfolding, setInlinePragma)
+import GHC.Types.Id.Info (IdDetails(..), RuleInfo(..))
+import GHC.Types.Id.Make (DataConBoxer(..))
+import GHC.Types.Var (Var (..), CoVar(..), setVarType, Id, idDetails)
+import GHC.Utils.Outputable
+
 
 -- import GHC.Utils.Trace
 --------------------------------------------------------------------------------
@@ -483,6 +507,259 @@ lookupRho env v = lookupVarEnv (ue_rho env) v
 
 --------------------------------------------------------------------------------
 
+
+-- =====================================
+-- Predicates
+-- =====================================
+
+
+isMatchableType :: Type -> Bool
+isMatchableType ty = 
+  case splitForAllTyCoVars ty of
+    (_, ty') -> case splitTyConApp_maybe ty' of
+      Just (tc, _) ->
+        case tyConClass_maybe tc of
+          Just cls -> className cls == matchableClassName
+          Nothing -> False
+      Nothing -> False
+
+isScaledMatchableType :: Scaled Type -> Bool
+isScaledMatchableType (Scaled _ ty) = isMatchableType ty
+
+isMatchableVar :: Var -> Bool
+isMatchableVar v = isId v && isMatchableType (varType v)
+
+isMatchableBinder :: Var -> Bool
+isMatchableBinder = isMatchableVar
+
+isMatchableDataCon :: OutExpr -> Bool
+isMatchableDataCon (Var v) =
+  case isDataConId_maybe v of
+    Just dc ->
+      case tyConClass_maybe (dataConTyCon dc) of
+        Just cls -> className cls == matchableClassName
+        Nothing -> False
+    Nothing -> False
+isMatchableDataCon _ = False
+
+
+isMatchableTheta :: PredType -> Bool
+isMatchableTheta theta = case getClassPredTys_maybe theta of
+  Nothing -> False
+  Just (cls, _) -> className cls == matchableClassName
+
+
+isMatchableCoercion :: Coercion -> Bool
+isMatchableCoercion co =
+  case coercionKind co of
+    Pair lty rty -> isMatchableType lty || isMatchableType rty
+
+
+isMatchableDataConApp :: CoreExpr -> CoreExpr -> Bool
+isMatchableDataConApp (App h _) _ = isMatchableDataCon h
+isMatchableDataConApp _ _ = False
+
+isMatchableArg :: CoreExpr -> Bool
+isMatchableArg (Var v) = isMatchableVar v
+isMatchableArg (Cast e co) = isMatchableArg e
+isMatchableArg _ = False
+
+
+
+-- =====================================
+-- Type manipulation
+-- =====================================
+
+
+
+unwrapAllCasts :: Type -> [KindCoercion] -> (Type, [KindCoercion])
+unwrapAllCasts ty cos = case splitCastTy_maybe ty of
+  Just (inner_ty, co) -> unwrapAllCasts inner_ty (co : cos)
+  Nothing -> (ty, cos)
+
+wrapCasts :: Type -> [KindCoercion] -> Type
+wrapCasts ty [] = ty
+wrapCasts ty (co : cos) = wrapCasts (CastTy ty co) cos
+
+decomp :: Type -> (([TcInvisTVBinder], ThetaType, Type), [KindCoercion])
+decomp ty =
+  let (bndrs, body) = tcSplitForAllInvisTVBinders ty
+      (body', cos) = unwrapAllCasts body []
+      theta = collectAllThetas body'
+      tau = dropAllThetas body'
+      tau' = walkType tau
+   in ((bndrs, theta, tau'), cos)
+  where
+    collectAllThetas ty =
+      case tcSplitPredFunTy_maybe ty of
+        Just (pred, rest) -> pred : collectAllThetas rest
+        Nothing -> []
+
+    dropAllThetas ty =
+      case tcSplitPredFunTy_maybe ty of
+        Just (_, rest) -> dropAllThetas rest
+        Nothing -> ty
+
+    walkType :: Type -> Type
+    walkType ty = case ty of
+      ForAllTy {} ->
+        let (processed, _) = removeMatchableThetas ty
+         in processed
+      FunTy af m m' arg res ->
+        FunTy af m m' (walkType arg) (walkType res)
+      AppTy fun arg ->
+        AppTy (walkType fun) (walkType arg)
+      TyConApp tc args ->
+        TyConApp tc (map walkType args)
+      CastTy inner co ->
+        CastTy (walkType inner) co
+      _ -> ty
+
+removalPass :: ([TcInvisTVBinder], ThetaType, Type) -> ([TcInvisTVBinder], ThetaType, Type)
+removalPass (bndrs, theta, ty) = (bndrs, theta', ty)
+  where
+    theta' = filter (not . isMatchableTheta) theta
+
+
+collect :: (([TcInvisTVBinder], ThetaType, Type), [KindCoercion]) -> Type
+collect ((bndrs, theta, tau), cos) = final_ty
+  where
+    phi_ty = mkPhiTy theta tau
+    casted = wrapCasts phi_ty cos
+    final_ty = mkInvisForAllTys bndrs casted
+
+removeMatchableThetas :: Type -> (Type, Int)
+removeMatchableThetas ty = (ty', length theta - length theta')
+  where
+    (inner@(_, theta, _), cos) = decomp ty
+    inner'@(_, theta', _) = removalPass inner
+    ty' = collect (inner', cos)
+
+
+-- =====================================
+-- ID/Var updates
+-- =====================================
+
+
+updateIdType :: Var -> Var
+updateIdType v =
+  let (ty, removed_args) = removeMatchableThetas (varType v)
+      v' = v `setVarType` ty
+   in v'
+
+
+
+filterByIndices :: [Int] -> Int -> [a] -> [a]
+filterByIndices indices offset xs = 
+  [x | (i, x) <- zip [offset..] xs, i `elem` indices] 
+
+
+dropBoxed :: Int -> [StrictnessMark] -> [StrictnessMark]
+dropBoxed _ [] = []
+dropBoxed 0 s  = s
+dropBoxed n (s:ss) | s == NotMarkedStrict = dropBoxed (n - 1) ss
+dropBoxed n (s:ss) = s : dropBoxed n ss
+
+
+updateDataCon :: DataCon -> DataCon
+updateDataCon dc = 
+  let
+      old_theta = dcOtherTheta dc
+      new_theta = filter (not . isMatchableTheta) old_theta
+      removed_theta_count = length old_theta - length new_theta
+      
+      (new_rep_type, removed_type_count) = removeMatchableThetas (dcRepType dc)
+      
+      new_rep_arity = dcRepArity dc - removed_theta_count
+      offset = length (dcUnivTyVars dc) + length (dcExTyCoVars dc)
+      (new_rep, _) = updateDataConRep (dcRep dc)
+      new_stricts = dropBoxed removed_theta_count (dcStricts dc)
+
+  in dc { dcRepType = new_rep_type
+        , dcWorkId = scrubId (dcWorkId dc)
+        , dcRep = new_rep
+        -- , dcRepArity = new_rep_arity
+        -- , dcStricts = new_stricts
+        }
+
+
+
+-- mk_boxer :: DataCon -> [Boxer] -> DataConBoxer
+-- mk_boxer dc boxers = DCB (\ ty_args src_vars ->
+--                   do { let (ex_vars, term_vars) = splitAtList ex_tvs src_vars
+--                             subst1 = zipTvSubst univ_tvs ty_args
+--                             subst2 = foldl2 extendTvSubstWithClone subst1 ex_tvs ex_vars
+--                       ; (rep_ids, binds) <- go subst2 boxers term_vars
+--                       ; return (ex_vars ++ rep_ids, binds) } )
+--   where
+--     (univ_tvs, ex_tvs, eq_spec, theta, orig_arg_tys, _orig_res_ty)
+--                  = dataConFullSig data_con
+
+--     (rep_tys_w_strs, wrappers)
+--       = unzip (zipWith dataConArgRep all_arg_tys (ev_ibangs ++ arg_ibangs))
+
+--     (unboxers, boxers) = unzip wrappers
+--     tycon        = dataConTyCon data_con       
+--     new_tycon = isNewTyCon tycon
+--     all_arg_tys  = map unrestricted ev_tys ++ orig_arg_tys
+
+--     orig_bangs   = dataConSrcBangs data_con
+
+
+--     arg_ibangs
+--       | new_tycon = map (const HsLazy) orig_arg_tys
+--       | otherwise = zipWith (dataConSrcToImplBang bangOpts emptyFamInstEnvs)
+--                             orig_arg_tys orig_bangs
+--       where
+--         bangOpts = BangOpts { bang_opt_strict_data = False
+--                             , bang_opt_unbox_disable = False
+--                             , bang_opt_unbox_strict = False
+--                             , bang_opt_unbox_small = False }
+
+--     ev_ibangs    = map (const HsLazy) ev_tys
+--     ev_tys       = eqSpecPreds eq_spec ++ theta
+
+--     go _ [] src_vars = assertPpr (null src_vars) (ppr data_con) $ return ([], [])
+--     go subst (UnitBox : boxers) (src_var : src_vars)
+--       = do { (rep_ids2, binds) <- go subst boxers src_vars
+--             ; return (src_var : rep_ids2, binds) }
+--     go subst (Boxer boxer : boxers) (src_var : src_vars)
+--       = do { (rep_ids1, arg)  <- boxer subst
+--             ; (rep_ids2, binds) <- go subst boxers src_vars
+--             ; return (rep_ids1 ++ rep_ids2, NonRec src_var arg : binds) }
+--     go _ (_:_) [] = pprPanic "mk_boxer" (ppr data_con)
+
+
+
+updateDataConRep :: DataConRep -> (DataConRep, [Int])
+updateDataConRep NoDataConRep = (NoDataConRep, [])
+updateDataConRep (DCR wrap_id (DCB boxer) arg_tys) = 
+  (DCR { dcr_wrap_id = scrubId wrap_id
+      , dcr_boxer = DCB boxer
+      , dcr_arg_tys = arg_tys
+      }, [])
+  -- where 
+  --   indexed_args = zip [0..] arg_tys
+  --   new_indexed_args = filter (not . isScaledMatchableType . snd) indexed_args
+  --   (indices, new_args) = unzip new_indexed_args
+
+
+
+scrubId :: Id -> Id
+scrubId id@(Id {}) = 
+  let id' = updateIdType id
+      details' = case idDetails id' of
+                   DataConWorkId dc -> DataConWorkId (updateDataCon dc)
+                   other -> other
+      result = id' { id_details = details' }
+  in  result
+scrubId otherwise = 
+  let result = updateIdType otherwise
+  in result
+
+
+
+
 unarise :: UniqSupply -> (DataCon -> [StgArg] -> Bool) -> [StgTopBinding] -> [StgTopBinding]
 unarise us is_dll_con_app binds = initUs_ us (mapM (unariseTopBinding (initUnariseEnv emptyVarEnv is_dll_con_app)) binds)
 
@@ -493,9 +770,9 @@ unariseTopBinding _ bind@StgTopStringLit{} = return bind
 
 unariseBinding :: UnariseEnv -> Bool -> StgBinding -> UniqSM StgBinding
 unariseBinding rho top_level (StgNonRec x rhs)
-  = StgNonRec x <$> unariseRhs rho top_level rhs
+  = StgNonRec (scrubId x) <$> unariseRhs rho top_level rhs
 unariseBinding rho top_level (StgRec xrhss)
-  = StgRec <$> mapM (\(x, rhs) -> (x,) <$> unariseRhs rho top_level rhs) xrhss
+  = StgRec <$> mapM (\(x, rhs) -> (scrubId x,) <$> unariseRhs rho top_level rhs) xrhss
 
 unariseRhs :: UnariseEnv -> Bool -> StgRhs -> UniqSM StgRhs
 unariseRhs rho top_level (StgRhsClosure ext ccs update_flag args expr typ)
@@ -535,7 +812,7 @@ unariseRhs rho top_level (StgRhsClosure ext ccs update_flag args expr typ)
 
 unariseRhs rho _top (StgRhsCon ccs con mu ts args typ)
   = assert (not (isUnboxedTupleDataCon con || isUnboxedSumDataCon con))
-    return (StgRhsCon ccs con mu ts (unariseConArgs rho args) typ)
+    return (StgRhsCon ccs (updateDataCon con) mu ts (unariseConArgs rho args) typ)
 
 --------------------------------------------------------------------------------
 
@@ -576,7 +853,7 @@ unariseExpr rho (StgConApp dc n args ty_args)
           -> return $ (mkTuple args')
   | otherwise =
       let args' = unariseConArgs rho args in
-      return $ (StgConApp dc n args' [])
+      return $ (StgConApp (updateDataCon dc) n args' ty_args)
 
 unariseExpr rho (StgOpApp op args ty)
   = return (StgOpApp op (unariseFunArgs rho args) ty)
@@ -743,10 +1020,13 @@ unariseAlts rho _ _ alts
   = mapM (\alt -> unariseAlt rho alt) alts
 
 unariseAlt :: UnariseEnv -> StgAlt -> UniqSM StgAlt
-unariseAlt rho alt@GenStgAlt{alt_con=_,alt_bndrs=xs,alt_rhs=e}
+unariseAlt rho alt@GenStgAlt{alt_con=con,alt_bndrs=xs,alt_rhs=e}
   = do (rho', xs') <- unariseConArgBinders rho xs
        !e' <- unariseExpr rho' e
-       return $! alt {alt_bndrs = xs', alt_rhs = e'}
+       let con' = case con of
+                    DataAlt dc -> DataAlt (updateDataCon dc)
+                    other -> other
+       return $! alt {alt_bndrs = xs', alt_rhs = e', alt_con = con'}
 
 --------------------------------------------------------------------------------
 
@@ -1078,6 +1358,14 @@ unariseArgBinder is_con_arg rho x =
       | isUnboxedSumType (idType x) || isUnboxedTupleType (idType x)
       -> do x' <- mkId (mkFastString "us") (primRepToType rep)
             return (extendRho rho x (MultiVal [StgVarArg x']), [x'])
+      | isMatchableType (idType x), is_con_arg
+        -> do
+          x' <- mkId (mkFastString "dum") (unitTy)
+          return (extendRho rho x (MultiVal []), [x'])
+      | isMatchableType (idType x) -- fun arg, do not remove void binders
+        -> do
+          x' <- mkId (mkFastString "dum") (unitTy)
+          return (extendRho rho x (MultiVal []), [x'])
       | otherwise
       -> return (extendRhoWithoutValue rho x, [x])
 
@@ -1091,10 +1379,13 @@ unariseArgBinder is_con_arg rho x =
 unariseFunArg :: UnariseEnv -> StgArg -> [StgArg]
 unariseFunArg rho (StgVarArg x) =
   case lookupRho rho x of
+    _ | isMatchableType (idType x) -> [nullAddrArg]
     Just (MultiVal [])  -> [voidArg]   -- NB: do not remove void args
     Just (MultiVal as)  -> as
     Just (UnaryVal arg) -> [arg]
-    Nothing             -> [StgVarArg x]
+    Nothing
+      | isMatchableType (idType x) -> [nullAddrArg] 
+      | otherwise -> [StgVarArg x]
 unariseFunArg _ arg@(StgLitArg lit) = case unariseLiteral_maybe lit of
   -- forgetting to unariseLiteral_maybe here caused #23914
   Just [] -> [voidArg]
@@ -1117,6 +1408,7 @@ unariseFunArgBinder = unariseArgBinder False
 unariseConArg :: UnariseEnv -> InStgArg -> [OutStgArg]
 unariseConArg rho (StgVarArg x) =
   case lookupRho rho x of
+    _ | isMatchableType (idType x) -> [nullAddrArg]
     Just (UnaryVal arg) -> [arg]
     Just (MultiVal as) -> as      -- 'as' can be empty
     Nothing
@@ -1174,6 +1466,9 @@ tagTy = intPrimTy
 
 voidArg :: StgArg
 voidArg = StgVarArg voidPrimId
+
+nullAddrArg :: StgArg
+nullAddrArg = StgVarArg (unitDataConId)
 
 mkDefaultLitAlt :: [StgAlt] -> [StgAlt]
 -- We have an exhaustive list of literal alternatives

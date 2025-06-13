@@ -667,6 +667,13 @@ runAnnotation        :: CoreAnnTarget -> LHsExpr GhcRn -> TcM Annotation
 ************************************************************************
 -}
 
+emitMatchableWanted :: Type -> TcM EvVar
+emitMatchableWanted m_var =  do
+  matchable_con <- tcLookupTyCon matchableClassName
+  emitWantedEvVar BracketOrigin $
+    mkTyConApp matchable_con [typeKind m_var, m_var]
+
+
 -- See Note [How brackets and nested splices are handled]
 tcTypedBracket rn_expr expr res_ty
   = addErrCtxt (TypedTHBracketCtxt expr) $
@@ -680,9 +687,13 @@ tcTypedBracket rn_expr expr res_ty
        ; m_var <- mkTyVarTy <$> mkMetaTyVar
        -- Make sure the type variable satisfies Quote
        ; ev_var <- emitQuoteWanted m_var
+
+       -- TODO: (mila) -> yeah i know this is super redundant. but it works. fix this?
+       ; pred_ev <- emitMatchableWanted m_var
+
        -- Bundle them together so they can be used in GHC.HsToCore.Quote for desugaring
        -- brackets.
-       ; let wrapper = QuoteWrapper ev_var m_var
+       ; let wrapper = QuoteWrapper ev_var pred_ev m_var
        -- Typecheck expr to make sure it is valid.
        -- The typechecked expression won't be used, so we just discard it
        --   (See Note [The life cycle of a TH quotation] in GHC.Hs.Expr)
@@ -697,6 +708,7 @@ tcTypedBracket rn_expr expr res_ty
        ; ps' <- readMutVar ps_ref
        ; codeco <- tcLookupId unsafeCodeCoerceName
        ; bracket_ty <- mkAppTy m_var <$> tcMetaTy expTyConName
+
        ; let brack_tc = HsBracketTc { hsb_quote = ExpBr noExtField expr, hsb_ty = bracket_ty
                                     , hsb_wrap  = Just wrapper, hsb_splices = ps' }
              -- The tc_expr is stored here so that the expression can be used in HIE files.
@@ -732,7 +744,7 @@ tcUntypedBracket rn_expr brack ps res_ty
        -- Unify the overall type of the bracket with the expected result type
        ; tcWrapResultO BracketOrigin rn_expr
             (HsUntypedBracket (HsBracketTc { hsb_quote = brack, hsb_ty = expected_type
-                                           , hsb_wrap = brack_info, hsb_splices = ps' })
+                                           , hsb_wrap = brack_info, hsb_splices = ps'})
                               (XQuote noExtField))
                 -- (XQuote noExtField): see Note [The life cycle of a TH quotation] in GHC.Hs.Expr
             expected_type res_ty
@@ -763,12 +775,13 @@ brackTy b =
         m_var <- mkTyVarTy <$> mkMetaTyVar
         -- Emit a Quote constraint for the bracket
         ev_var <- emitQuoteWanted m_var
+        pred_ev <- emitMatchableWanted m_var
         -- Construct the final expected type of the quote, for example
         -- m Exp or m Type
         final_ty <- mkAppTy m_var <$> tcMetaTy n
         -- Return the evidence variable and metavariable to be used during
         -- desugaring.
-        let wrapper = QuoteWrapper ev_var m_var
+        let wrapper = QuoteWrapper ev_var pred_ev m_var
         return (Just wrapper, final_ty)
   in
   case b of
@@ -908,7 +921,7 @@ tcNestedSplice :: ThStage -> PendingStuff -> Name
                 -> LHsExpr GhcRn -> ExpRhoType -> TcM (HsExpr GhcTc)
     -- See Note [How brackets and nested splices are handled]
     -- A splice inside brackets
-tcNestedSplice pop_stage (TcPending ps_var lie_var q@(QuoteWrapper _ m_var)) splice_name expr res_ty
+tcNestedSplice pop_stage (TcPending ps_var lie_var q@(QuoteWrapper _ _ m_var)) splice_name expr res_ty
   = do { res_ty <- expTypeToType res_ty
        ; let rep = getRuntimeRep res_ty
        ; meta_exp_ty <- tcTExpTy m_var res_ty
@@ -2590,7 +2603,7 @@ reifyType ty                | tcIsLiftedTypeKind ty = return TH.StarT
 reifyType ty@(ForAllTy (Bndr _ argf) _)
                             = reify_for_all argf ty
 reifyType (LitTy t)         = do { r <- reifyTyLit t; return (TH.LitT r) }
-reifyType (TyVarTy tv)      = return (TH.VarT (reifyName tv))
+reifyType (TyVarTy tv _)      = return (TH.VarT (reifyName tv))
 reifyType (TyConApp tc tys) = reify_tc_app tc tys   -- Do not expand type synonyms here
 reifyType ty@(AppTy {})     = do
   let (ty_head, ty_args) = splitAppTys ty
@@ -2609,14 +2622,14 @@ reifyType ty@(AppTy {})     = do
     filter_out_invisible_args ty_head ty_args =
       filterByList (map isVisibleForAllTyFlag $ appTyForAllTyFlags ty_head ty_args)
                    ty_args
-reifyType ty@(FunTy { ft_af = af, ft_mult = ManyTy, ft_arg = t1, ft_res = t2 })
+reifyType ty@(FunTy { ft_af = af, ft_mult = ManyTy, ft_arg = t1, ft_res = t2, ft_mat = tm1 })
   | isInvisibleFunArg af = reify_for_all Inferred ty  -- Types like ((?x::Int) => Char -> Char)
-  | otherwise            = do { [r1,r2] <- reifyTypes [t1,t2]
-                              ; return (TH.ArrowT `TH.AppT` r1 `TH.AppT` r2) }
-reifyType ty@(FunTy { ft_af = af, ft_mult = tm, ft_arg = t1, ft_res = t2 })
+  | otherwise            = do { [m1,r1,r2] <- reifyTypes [tm1, t1,t2]
+                              ; return (TH.ArrowT `TH.AppT` m1 `TH.AppT` r1 `TH.AppT` r2) }
+reifyType ty@(FunTy { ft_af = af, ft_mult = tm, ft_arg = t1, ft_res = t2, ft_mat = tm1 })
   | isInvisibleFunArg af = noTH LinearInvisibleArgument ty
-  | otherwise            = do { [rm,r1,r2] <- reifyTypes [tm,t1,t2]
-                              ; return (TH.MulArrowT `TH.AppT` rm `TH.AppT` r1 `TH.AppT` r2) }
+  | otherwise            = do { [rm,m1,r1,r2] <- reifyTypes [tm,tm1,t1,t2]
+                              ; return (TH.MulArrowT `TH.AppT` rm `TH.AppT` m1 `TH.AppT` r1 `TH.AppT` r2) }
 reifyType (CastTy t _)      = reifyType t -- Casts are ignored in TH
 reifyType ty@(CoercionTy {})= noTH CoercionsInTypes ty
 

@@ -3543,7 +3543,7 @@ pprHoleFit (HFDC sWrp sWrpVars sTy sProv sMs) (TcHoleFit (HoleFit {..})) =
            -- into [m, a]
            unwrapTypeVars :: Type -> [ForAllTyBinder]
            unwrapTypeVars t = vars ++ case splitFunTy_maybe unforalled of
-                               Just (_, _, _, unfunned) -> unwrapTypeVars unfunned
+                               Just (_, _, _, _, unfunned) -> unwrapTypeVars unfunned
                                _ -> []
              where (vars, unforalled) = splitForAllForAllTyBinders t
        holeVs = sep $ map (parens . (text "_" <+> dcolon <+>) . ppr) hfMatches
@@ -5362,11 +5362,12 @@ tidySigSkol env cx ty tv_prs
       where
         (env', tv') = tidy_tv_bndr env tv
 
-    tidy_ty env ty@(FunTy { ft_mult = w, ft_arg = arg, ft_res = res })
+    tidy_ty env ty@(FunTy { ft_mult = w, ft_arg = arg, ft_res = res, ft_mat = mat })
       = -- Look under  c => t and t1 -> t2
         ty { ft_mult = tidy_ty env w
            , ft_arg  = tidyType env arg
-           , ft_res  = tidy_ty env res }
+           , ft_res  = tidy_ty env res
+           , ft_mat = tidy_ty env mat }
 
     tidy_ty env ty = tidyType env ty
 
@@ -5559,7 +5560,7 @@ expandSynonymsToMatch ty1 ty2 = (ty1_ret, ty2_ret)
           (t1_2', t2_2') = go t1_2 t2_2
        in (mkAppTy t1_1' t1_2', mkAppTy t2_1' t2_2')
 
-    go ty1@(FunTy _ w1 t1_1 t1_2) ty2@(FunTy _ w2 t2_1 t2_2) | w1 `eqType` w2 =
+    go ty1@(FunTy _ w1 m1 t1_1 t1_2) ty2@(FunTy _ w2 m2 t2_1 t2_2) | w1 `eqType` w2 && m1 `eqType` m2 =
       let (t1_1', t2_1') = go t1_1 t2_1
           (t1_2', t2_2') = go t1_2 t2_2
        in ( ty1 { ft_arg = t1_1', ft_res = t1_2' }
@@ -6223,7 +6224,7 @@ pprSynAbstractDataError = \case
            Just $ text "Invalid type family" <+> quotes (ppr tc) <> dot
       ty@(ForAllTy {})
         -> Just $ text "Invalid polymorphic type" <> colon <+> ppr ty <> dot
-      ty@(FunTy af _ _ _)
+      ty@(FunTy af _ _ _ _)
         | not (af == FTF_T_T)
         -> Just $ text "Invalid qualified type" <> colon <+> ppr ty <> dot
       _ -> Nothing

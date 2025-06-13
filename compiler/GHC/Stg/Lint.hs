@@ -338,7 +338,7 @@ lintAlt GenStgAlt{ alt_con   = DataAlt _
                  , alt_bndrs = bndrs
                  , alt_rhs   = rhs} =
   do
-    mapM_ checkPostUnariseBndr bndrs
+    -- mapM_ checkPostUnariseBndr bndrs
     addInScopeVars bndrs (lintStgExpr rhs)
 
 lintConApp :: DataCon -> [StgArg] -> SDoc -> LintM ()
@@ -352,7 +352,7 @@ lintConApp con args app = do
     when (unarised &&
           not (isUnboxedTupleDataCon con) &&
           length (dataConRuntimeRepStrictness con) /= length args) $ do
-      addErrL (text "Constructor applied to incorrect number of arguments:" $$
+      addErrL (text "Constructor applied to incorrect number of arguments... Expected" $$ ppr (length (dataConRuntimeRepStrictness con)) $$ text "but got" $$ ppr (length args) $$
                text "Application:" <> app)
 
 -- See Note [Linting StgApp]

@@ -261,6 +261,7 @@ To achieve this, `go_fam` in `uVarOrFam` does this;
 
 
 Wrinkles
+-- !FLAG -> Change this here for the apartness check
 
 (ATF0) Once we encounter a type-family application, we only ever return
              MaybeApart   or   SurelyApart
@@ -1556,11 +1557,17 @@ unify_ty env ty1 (CastTy ty2 co2) kco
 -- They can match FunTy and TyConApp, so use splitAppTy_maybe
 unify_ty env (AppTy ty1a ty1b) ty2 _kco
   | Just (ty2a, ty2b) <- tcSplitAppTyNoView_maybe ty2
+    -- isAppHeadMatchable ty1a
   = unify_ty_app env ty1a [ty1b] ty2a [ty2b]
+  -- | otherwise
+  -- = maybeApart MARTypeFamily
 
 unify_ty env ty1 (AppTy ty2a ty2b) _kco
   | Just (ty1a, ty1b) <- tcSplitAppTyNoView_maybe ty1
+    -- isAppHeadMatchable ty2a
   = unify_ty_app env ty1a [ty1b] ty2a [ty2b]
+  -- | otherwise
+  -- = maybeApart MARTypeFamily
 
 unify_ty _ (LitTy x) (LitTy y) _kco | x == y = return ()
 
@@ -1577,7 +1584,7 @@ unify_ty env (CoercionTy co1) (CoercionTy co2) kco
            CoVarCo cv
              | not (um_unif env)
              , not (cv `elemVarEnv` c_subst)   -- Not forall-bound
-             , let (_mult_co, co_l, co_r) = decomposeFunCo kco
+             , let (_, _, co_l, co_r) = decomposeFunCo kco
                      -- Because the coercion is used in a type, it should be safe to
                      -- ignore the multiplicity coercion, _mult_co
                       -- cv :: t1 ~ t2
@@ -1592,10 +1599,10 @@ unify_ty env (CoercionTy co1) (CoercionTy co2) kco
 
            _ -> return () }
 
-unify_ty env (TyVarTy tv1) ty2 kco
+unify_ty env (TyVarTy tv1 _) ty2 kco
   = uVarOrFam env (TyVarLHS tv1) ty2 kco
 
-unify_ty env ty1 (TyVarTy tv2) kco
+unify_ty env ty1 (TyVarTy tv2 _) kco
   | um_unif env  -- If unifying, can swap args; but not when matching
   = uVarOrFam (umSwapRn env) (TyVarLHS tv2) ty1 (mkSymCo kco)
 
@@ -1670,6 +1677,22 @@ unify_ty env ty1 ty2 kco
     mb_sat_fam_app2 = isSatFamApp ty2
 
 unify_ty _ _ _ _ = surelyApart
+
+
+-----------------------------
+
+isMatchableTyCon :: TyCon -> Bool
+isMatchableTyCon tc = isInjectiveTyCon tc Nominal && isGenerativeTyCon tc Nominal
+
+-- isAppHeadMatchable :: Type -> Bool
+-- isAppHeadMatchable (TyVarTy tv _) = isMatchableKind (tyVarKind tv)
+-- isAppHeadMatchable (AppTy th _)  = isAppHeadMatchable th
+-- isAppHeadMatchable (TyConApp tc _) = isMatchableTyCon tc
+-- isAppHeadMatchable _ = False
+
+-- isMatchableKind :: Kind -> Bool
+-- isMatchableKind ki = case ki of
+--   FunTy { ft_mat = mat } -> mat == matchableDataCon
 
 -----------------------------
 unify_tc_app :: UMEnv -> TyCon -> [Type] -> [Type] -> UM ()
@@ -1783,7 +1806,7 @@ uVarOrFam env ty1 ty2 kco
 
       -- If we are matching or unifying a ~ a, take care
       -- See Note [Self-substitution when unifying or matching]
-      | TyVarTy tv2 <- ty2
+      | TyVarTy tv2 _ <- ty2
       , let tv2' = umRnOccR env tv2
       , tv1' == tv2'
       = if | um_unif env     -> return ()
@@ -1886,6 +1909,28 @@ uVarOrFam env ty1 ty2 kco
       = return ()
 
       | otherwise
+       -- !FLAG -> There's really only one question for me atm: tf is binding?
+       -- ! Otherwise, yeah, they decompose here to unify regardless of if F is injective
+       -- ! and non-injectivity comes into play in demoting sure apartness.
+       -- ! so in theory i can allow f a ~ g b to just unify. although writing that makes me
+       -- ! queasy. but from what i understand, i just need to find an alternative way to 
+       -- ! prevent unsat tyfams from coming up there.
+
+
+{-
+Okay. Here's my write up:
+
+The inst env head check says always bind. It's to force those
+tyfam unifications to scream maybe apart. We don't always want that
+(apparently) but in this case we do. Suggests to me that we do the same
+with the appty-appty, if it binds then maybe apart and if not we unify.
+
+With the maybe apart, try first without doing substitution jazz and then 
+if it fails, try with as an experiment. 
+
+  God willing that doesn't break anything.
+-}
+
        -- Decompose (F tys1 ~ F tys2): (ATF9)
        -- Use injectivity information of F: (ATF10)
        -- But first bind the type-fam if poss: (ATF11)
@@ -2211,7 +2256,7 @@ ty_co_match menv subst ty co lkco rkco
   = swapLiftCoEnv <$> ty_co_match menv (swapLiftCoEnv subst) ty co' rkco lkco
 
   -- Match a type variable against a non-refl coercion
-ty_co_match menv subst (TyVarTy tv1) co lkco rkco
+ty_co_match menv subst (TyVarTy tv1 _) co lkco rkco
   | Just co1' <- lookupVarEnv subst tv1' -- tv1' is already bound to co1
   = if eqCoercionX (nukeRnEnvL rn_env) co1' co
     then Just subst
@@ -2245,10 +2290,10 @@ ty_co_match menv subst ty1 (AppCo co2 arg2) _lkco _rkco
 ty_co_match menv subst (TyConApp tc1 tys) (TyConAppCo _ tc2 cos) _lkco _rkco
   = ty_co_match_tc menv subst tc1 tys tc2 cos
 
-ty_co_match menv subst (FunTy { ft_mult = w, ft_arg = ty1, ft_res = ty2 })
-            (FunCo { fco_mult = co_w, fco_arg = co1, fco_res = co2 }) _lkco _rkco
-  = ty_co_match_args menv subst [w,    rep1,    rep2,    ty1, ty2]
-                                [co_w, co1_rep, co2_rep, co1, co2]
+ty_co_match menv subst (FunTy { ft_mult = w, ft_arg = ty1, ft_res = ty2, ft_mat = mat })
+            (FunCo { fco_mult = co_w, fco_arg = co1, fco_res = co2, fco_mat = co_m }) _lkco _rkco
+  = ty_co_match_args menv subst [w,    mat,  rep1,    rep2,    ty1, ty2]
+                                [co_w, co_m, co1_rep, co2_rep, co1, co2]
   where
      rep1    = getRuntimeRep ty1
      rep2    = getRuntimeRep ty2
@@ -2360,8 +2405,8 @@ pushRefl co =
   case (isReflCo_maybe co) of
     Just (AppTy ty1 ty2, Nominal)
       -> Just (AppCo (mkReflCo Nominal ty1) (mkNomReflCo ty2))
-    Just (FunTy af w ty1 ty2, r)
-      ->  Just (FunCo r af af (mkReflCo r w) (mkReflCo r ty1) (mkReflCo r ty2))
+    Just (FunTy af w m ty1 ty2, r)
+      ->  Just (FunCo r af af (mkReflCo r w) (mkReflCo r m) (mkReflCo r ty1) (mkReflCo r ty2))
     Just (TyConApp tc tys, r)
       -> Just (TyConAppCo r tc (zipWith mkReflCo (tyConRoleListX r tc) tys))
     Just (ForAllTy (Bndr tv vis) ty, r)

@@ -58,6 +58,7 @@ module GHC.Tc.Types.Constraint (
         isSolvedWC, andWC, unionsWC, mkSimpleWC, mkImplicWC,
         addInsols, dropMisleading, addSimples, addImplics, addHoles,
         addNotConcreteError, addMultiplicityCoercionError, addDelayedErrors,
+        addMatCoercionError,
         tyCoVarsOfWC, tyCoVarsOfWCList,
         insolubleWantedCt, insolubleCt, insolubleIrredCt,
         insolubleImplic, nonDefaultableTyVarsOfWC,
@@ -377,6 +378,7 @@ data DelayedError
     --
     -- See Note [The Concrete mechanism] in GHC.Tc.Utils.Concrete.
   | DE_Multiplicity TcCoercion CtLoc
+  | DE_Mat TcCoercion CtLoc
     -- ^ An error if the TcCoercion isn't a reflexivity constraint.
     --
     -- See Note [Coercion errors in tcSubMult] in GHC.Tc.Utils.Unify.
@@ -1150,6 +1152,10 @@ addNotConcreteError wc err
 addMultiplicityCoercionError :: WantedConstraints -> TcCoercion -> CtLoc -> WantedConstraints
 addMultiplicityCoercionError wc mult_co loc
   = wc { wc_errors = unitBag (DE_Multiplicity mult_co loc) `unionBags` wc_errors wc }
+
+addMatCoercionError :: WantedConstraints -> TcCoercion -> CtLoc -> WantedConstraints
+addMatCoercionError wc mult_co loc
+  = wc { wc_errors = unitBag (DE_Mat mult_co loc) `unionBags` wc_errors wc }
 
 addDelayedErrors :: WantedConstraints -> Bag DelayedError -> WantedConstraints
 addDelayedErrors wc errs

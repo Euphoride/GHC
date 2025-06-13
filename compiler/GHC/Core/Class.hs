@@ -6,7 +6,7 @@
 
 
 module GHC.Core.Class (
-        Class,
+        Class(..),
         ClassOpItem,
         ClassATItem(..), TyFamEqnValidityInfo(..),
         ClassMinimalDef,

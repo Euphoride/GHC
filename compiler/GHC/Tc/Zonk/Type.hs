@@ -1263,10 +1263,11 @@ zonkBracket (HsBracketTc hsb_thing ty wrap bs)
        new_ty <- zonkTcTypeToTypeX ty
        return (HsBracketTc hsb_thing new_ty wrap' bs')
   where
-    zonkQuoteWrap (QuoteWrapper ev ty) = do
+    zonkQuoteWrap (QuoteWrapper ev mev ty) = do
         ev' <- zonkIdOcc ev
+        mev' <- zonkIdOcc mev
         ty' <- zonkTcTypeToTypeX ty
-        return (QuoteWrapper ev' ty')
+        return (QuoteWrapper ev' mev' ty')
 
     zonk_b (PendingTcSplice n e) = do e' <- zonkLExpr e
                                       return (PendingTcSplice n e')

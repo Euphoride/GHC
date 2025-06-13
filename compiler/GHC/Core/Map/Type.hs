@@ -246,14 +246,14 @@ eqDeBruijnType env_t1@(D env1 t1) env_t2@(D env2 t2) =
           (CastTy t1 _, _)  -> hasCast (go (D env t1) (D env t'))
           (_, CastTy t1' _) -> hasCast (go (D env t) (D env t1'))
 
-          (TyVarTy v, TyVarTy v')
+          (TyVarTy v _, TyVarTy v' _)
               -> liftEquality $ eqDeBruijnVar (D env v) (D env' v')
           -- See Note [Equality on AppTys] in GHC.Core.Type
           (AppTy t1 t2, s) | Just (t1', t2') <- splitAppTyNoView_maybe s
               -> go (D env t1) (D env' t1') `andEq` go (D env t2) (D env' t2')
           (s, AppTy t1' t2') | Just (t1, t2) <- splitAppTyNoView_maybe s
               -> go (D env t1) (D env' t1') `andEq` go (D env t2) (D env' t2')
-          (FunTy v1 w1 t1 t2, FunTy v1' w1' t1' t2')
+          (FunTy v1 w1 m1 t1 t2, FunTy v1' w1' m1' t1' t2')
 
               -> liftEquality (v1 == v1') `andEq`
                  -- NB: eqDeBruijnType does the kind check requested by
@@ -261,7 +261,8 @@ eqDeBruijnType env_t1@(D env1 t1) env_t2@(D env2 t2) =
                  liftEquality (eqDeBruijnType (D env t1) (D env' t1')) `andEq`
                  liftEquality (eqDeBruijnType (D env t2) (D env' t2')) `andEq`
                  -- Comparing multiplicities last because the test is usually true
-                 go (D env w1) (D env w1')
+                 go (D env w1) (D env w1') `andEq`
+                 go (D env m1) (D env m1')
           (TyConApp tc tys, TyConApp tc' tys')
               -> liftEquality (tc == tc') `andEq` gos env env' tys tys'
           (LitTy l, LitTy l')
@@ -311,7 +312,7 @@ lkT :: DeBruijn Type -> TypeMapX a -> Maybe a
 lkT (D env ty) m = go ty m
   where
     go ty | Just ty' <- trieMapView ty = go ty'
-    go (TyVarTy v)                 = tm_var    >.> lkVar env v
+    go (TyVarTy v _)                 = tm_var    >.> lkVar env v
     go (AppTy t1 t2)               = tm_app    >.> lkG (D env t1)
                                                >=> lkG (D env t2)
     go (TyConApp tc [])            = tm_tycon  >.> lkDNamed tc
@@ -330,7 +331,7 @@ lkT (D env ty) m = go ty m
 xtT :: DeBruijn Type -> XT a -> TypeMapX a -> TypeMapX a
 xtT (D env ty) f m | Just ty' <- trieMapView ty = xtT (D env ty') f m
 
-xtT (D env (TyVarTy v))       f m = m { tm_var    = tm_var m |> xtVar env v f }
+xtT (D env (TyVarTy v _))       f m = m { tm_var    = tm_var m |> xtVar env v f }
 xtT (D env (AppTy t1 t2))     f m = m { tm_app    = tm_app m |> xtG (D env t1)
                                                             |>> xtG (D env t2) f }
 xtT (D _   (TyConApp tc []))  f m = m { tm_tycon  = tm_tycon m |> xtDNamed tc f }

@@ -60,6 +60,10 @@ import Data.List.NonEmpty (NonEmpty (..))
 import Data.List (sort)
 import qualified Data.IntSet as IS
 
+import GHC.Core.Predicate (isClassPred, getClassPredTys_maybe)
+import GHC.Core.Class (Class(..))
+import GHC.Builtin.Names ( matchableClassName )
+
 {- **********************************************************************
 *                                                                       *
                 Representation types
@@ -119,7 +123,7 @@ countFunRepArgs :: Arity -> Type -> RepArity
 countFunRepArgs 0 _
   = 0
 countFunRepArgs n ty
-  | FunTy _ _ arg res <- unwrapType ty
+  | FunTy _ _ _ arg res <- unwrapType ty
   = (length (typePrimRep arg) `max` 1)
     + countFunRepArgs (n - 1) res
     -- If typePrimRep returns [] that means a void arg,
@@ -134,7 +138,7 @@ countConRepArgs dc = go (dataConRepArity dc) (dataConRepType dc)
     go 0 _
       = 0
     go n ty
-      | FunTy _ _ arg res <- unwrapType ty
+      | FunTy _ _ _ arg res <- unwrapType ty
       = length (typePrimRep arg) + go (n - 1) res
       | otherwise
       = pprPanic "countConRepArgs: arity greater than type can handle" (ppr (n, ty, typePrimRep ty))
@@ -167,11 +171,21 @@ dataConRuntimeRepStrictness dc =
       where
         reps = typePrimRep ty
     go [] [] out_marks = reverse out_marks
-    go _m _t _o = pprPanic "dataConRuntimeRepStrictness2" (ppr dc $$ ppr _m $$ ppr _t $$ ppr _o)
+    go _m _t _o = pprPanic "dataConRuntimeRepStrictness2" (ppr dc $$ ppr _m $$ ppr _t $$ ppr _o $$ ppr (dataConRepArgTys dc) $$ (ppr (dataConRepStrictness dc)))
+
+
+isMatchableType :: Type -> Bool
+isMatchableType ty =
+  case splitTyConApp_maybe ty of
+    Just (tc, _) ->
+      case tyConClass_maybe tc of
+        Just cls -> className cls == matchableClassName
+        Nothing -> False
+    Nothing -> False
 
 -- | True if the type has zero width.
 isZeroBitTy :: HasDebugCallStack => Type -> Bool
-isZeroBitTy = null . typePrimRep
+isZeroBitTy ty = (null . typePrimRep) ty || (isMatchableType ty)
 
 
 {- **********************************************************************

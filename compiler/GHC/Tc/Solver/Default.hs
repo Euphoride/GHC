@@ -11,7 +11,7 @@ import GHC.Prelude
 import GHC.Tc.Errors
 import GHC.Tc.Errors.Types
 import GHC.Tc.Types.Evidence
-import GHC.Tc.Solver.Solve   ( solveSimpleWanteds, setImplicationStatus )
+import GHC.Tc.Solver.Solve   ( solveSimpleWanteds, setImplicationStatus, solveSimpleGivens )
 import GHC.Tc.Solver.Dict    ( solveCallStack )
 import GHC.Tc.Utils.Unify
 import GHC.Tc.Utils.TcMType as TcM
@@ -19,10 +19,12 @@ import GHC.Tc.Utils.Monad   as TcM
 import GHC.Tc.Zonk.TcType     as TcM
 import GHC.Tc.Solver.Solve( solveWanteds )
 import GHC.Tc.Solver.Monad  as TcS
+import GHC.Tc.Solver.Dict (chooseInstance)
 import GHC.Tc.Types.Constraint
 import GHC.Tc.Types.CtLoc( mkGivenLoc )
 import GHC.Tc.Types.Origin
 import GHC.Tc.Utils.TcType
+import GHC.Tc.Instance.Class (mkMatchableInst)
 
 import GHC.Core.Class
 import GHC.Core.Reduction( Reduction, reductionCoercion )
@@ -34,6 +36,7 @@ import GHC.Core.Unify    ( tcMatchTyKis )
 import GHC.Core.Predicate
 import GHC.Core.Type
 import GHC.Core.TyCo.Tidy
+import GHC.Core.TyCo.Rep ( templateMatchabilityVar )
 
 import GHC.Types.DefaultEnv ( ClassDefaults (..), defaultList )
 import GHC.Types.Unique.Set
@@ -41,6 +44,8 @@ import GHC.Types.Id
 
 import GHC.Builtin.Utils
 import GHC.Builtin.Names
+import GHC.Unit.Module (getModule)
+
 import GHC.Builtin.Types
 
 import GHC.Types.TyThing ( MonadThings(lookupId) )
@@ -112,13 +117,59 @@ defaulting. Again this is done at the top-level and the plan is:
 More details in Note [DefaultTyVar].
 -}
 
+isOrphanMatchableCt :: Class -> Ct -> Bool
+isOrphanMatchableCt cls (CDictCan (DictCt {di_cls = dicls, di_tys = [_, ty] })) = (dicls == cls) && (isTyVarTy ty)
+isOrphanMatchableCt _ _ = False
+
+defaultSolveMatchable :: Ct -> TcS ()
+defaultSolveMatchable (CDictCan work_item@(DictCt {di_ev = ev, di_cls = dicls, di_tys = ditys})) = do
+  ditys <- wrapTcS $ liftZonkM $ TcM.zonkTcTypes ditys
+  mInst <- wrapTcS $ mkMatchableInst dicls ditys []
+  updSolvedDicts (cir_what mInst) work_item
+ 
+  setEvBindIfWanted ev (cir_canonical mInst) ((cir_mk_ev mInst) [])
+  return ()
+defaultSolveMatchable _ = return ()
+
+tryDefaultImplic :: Implication -> TcS (Maybe Implication)
+tryDefaultImplic implic = do
+  wntds <- nestImplicTcS (ic_binds implic) (ic_tclvl implic) $ do 
+    let loc = mkGivenLoc (ic_tclvl implic) (ic_info implic) (ic_env implic)
+        givens = mkGivens loc (ic_given implic)
+    
+    solveSimpleGivens givens
+    tryDefaultMatchableTyvars (ic_wanted implic)
+
+  setImplicationStatus $ implic { ic_wanted = wntds }
+  
+
+tryDefaultMatchableTyvars :: WantedConstraints -> TcS WantedConstraints
+tryDefaultMatchableTyvars wc = do
+  mod <- getModule
+  if mod == gHC_INTERNAL_MATCHABLE 
+    then return wc  
+    else do
+      mcls <- tcLookupClass matchableClassName
+
+      let (orph, keep) = partitionBag (isOrphanMatchableCt mcls) (wc_simple wc)
+
+      traceTcS "(tryDefaultMatchableTyvars): Defaulting simple orphan matchable constraints -> " (ppr orph)
+      traceTcS "(tryDefaultMatchableTyvars): Keeping these simple constraints -> " (ppr keep)
+
+      mapBagM_ defaultSolveMatchable orph
+  
+      implics <- mapBagM tryDefaultImplic (wc_impl wc)
+
+      return $ wc { wc_simple = keep, wc_impl = catBagMaybes implics }
+
 
 tryDefaulting :: WantedConstraints -> TcS WantedConstraints
 -- This is the function that pulls all the defaulting strategies together
 tryDefaulting wc
  = do { dflags <- getDynFlags
       ; traceTcS "tryDefaulting:before" (ppr wc)
-      ; wc1 <- tryTyVarDefaulting dflags wc
+      ; wc5 <- tryDefaultMatchableTyvars wc
+      ; wc1 <- tryTyVarDefaulting dflags wc5
       ; wc2 <- tryConstraintDefaulting wc1
       ; wc3 <- tryTypeClassDefaulting wc2
       ; wc4 <- tryUnsatisfiableGivens wc3
@@ -190,6 +241,10 @@ defaultTyVarTcS the_tv
   | isMultiplicityVar the_tv
   = do { traceTcS "defaultTyVarTcS Multiplicity" (ppr the_tv)
        ; unifyTyVar the_tv ManyTy
+       ; return didUnification }
+  | isMatchabilityVar the_tv
+  = do { traceTcS "defaultTyVarTcS Matchability" (ppr the_tv)
+       ; unifyTyVar the_tv matchableDataConTy
        ; return didUnification }
   | otherwise
   = return noUnification  -- the common case
@@ -280,7 +335,7 @@ unsatisfiableEvExpr (unsat_ev, given_msg) wtd_ty
          -- for a description of what evidence term we are constructing here.
 
        ; let -- (##) -=> wtd_ty
-             fun_ty = mkFunTy visArgConstraintLike ManyTy unboxedUnitTy wtd_ty
+             fun_ty = mkFunTy visArgConstraintLike ManyTy matchableDataConTy unboxedUnitTy wtd_ty
              mkDictBox = case boxingDataCon fun_ty of
                BI_Box { bi_data_con = mkDictBox } -> mkDictBox
                _ -> pprPanic "unsatisfiableEvExpr: no DictBox!" (ppr wtd_ty)

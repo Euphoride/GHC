@@ -150,6 +150,8 @@ module GHC.Tc.Utils.Monad(
   -- * Complete matches
   localAndImportedCompleteMatches, getCompleteMatchesTcM,
 
+  ensureReflMatCo,
+
   -- * Types etc.
   module GHC.Tc.Types,
   module GHC.Data.IOEnv
@@ -1918,6 +1920,15 @@ ensureReflMultiplicityCo mult_co origin
            { loc <- getCtLocM origin Nothing
            ; lie_var <- getConstraintVar
            ; updTcRef lie_var (\w -> addMultiplicityCoercionError w mult_co loc) } }
+
+ensureReflMatCo :: TcCoercion -> CtOrigin -> TcM ()
+ensureReflMatCo mult_co origin
+  = do { traceTc "ensureReflMatCo" (ppr mult_co)
+       ; unless (isReflCo mult_co) $ do
+           { loc <- getCtLocM origin Nothing
+           ; lie_var <- getConstraintVar
+           ; updTcRef lie_var (\w -> addMatCoercionError w mult_co loc) } }
+
 
 -- | Throw out any constraints emitted by the thing_inside
 discardConstraints :: TcM a -> TcM a

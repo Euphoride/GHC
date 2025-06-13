@@ -14,7 +14,7 @@ import GHC.Prelude
 
 -- primop rules are attached to primop ids
 import {-# SOURCE #-} GHC.Core.Opt.ConstantFold (primOpRules)
-import GHC.Core.TyCo.Rep ( scaledThing )
+import GHC.Core.TyCo.Rep ( scaledThing, mkMatchableVisFunTysMany )
 import GHC.Core.Type
 import GHC.Core.Predicate( tyCoVarsOfTypeWellScoped )
 import GHC.Core.FVs (mkRuleInfo)
@@ -49,7 +49,7 @@ mkPrimOpId prim_op
   = id
   where
     (tyvars,arg_tys,res_ty, arity, strict_sig) = primOpSig prim_op
-    ty   = mkForAllTys tyvars (mkVisFunTysMany arg_tys res_ty)
+    ty   = mkForAllTys tyvars (mkMatchableVisFunTysMany arg_tys res_ty)
     name = mkWiredInName gHC_PRIM (primOpOcc prim_op)
                          (mkPrimOpIdUnique (primOpTag prim_op))
                          (AnId id) UserSyntax

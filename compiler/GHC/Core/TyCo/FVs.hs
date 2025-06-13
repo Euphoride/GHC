@@ -598,7 +598,7 @@ tyCoVarsOfTypesList tys = fvVarList $ tyCoFVsOfTypes tys
 -- See Note [FV eta expansion] in "GHC.Utils.FV" for explanation.
 tyCoFVsOfType :: Type -> FV
 -- See Note [Free variables of types]
-tyCoFVsOfType (TyVarTy v)        f bound_vars (acc_list, acc_set)
+tyCoFVsOfType (TyVarTy v _)        f bound_vars (acc_list, acc_set)
   | not (f v) = (acc_list, acc_set)
   | v `elemVarSet` bound_vars = (acc_list, acc_set)
   | v `elemVarSet` acc_set = (acc_list, acc_set)
@@ -609,7 +609,7 @@ tyCoFVsOfType (TyConApp _ tys)   f bound_vars acc = tyCoFVsOfTypes tys f bound_v
                                                     -- See Note [Free vars and synonyms]
 tyCoFVsOfType (LitTy {})         f bound_vars acc = emptyFV f bound_vars acc
 tyCoFVsOfType (AppTy fun arg)    f bound_vars acc = (tyCoFVsOfType fun `unionFV` tyCoFVsOfType arg) f bound_vars acc
-tyCoFVsOfType (FunTy _ w arg res)  f bound_vars acc = (tyCoFVsOfType w `unionFV` tyCoFVsOfType arg `unionFV` tyCoFVsOfType res) f bound_vars acc
+tyCoFVsOfType (FunTy _ w m arg res)  f bound_vars acc = (tyCoFVsOfType m `unionFV` tyCoFVsOfType w `unionFV` tyCoFVsOfType arg `unionFV` tyCoFVsOfType res) f bound_vars acc
 tyCoFVsOfType (ForAllTy bndr ty) f bound_vars acc = tyCoFVsBndr bndr (tyCoFVsOfType ty)  f bound_vars acc
 tyCoFVsOfType (CastTy ty co)     f bound_vars acc = (tyCoFVsOfType ty `unionFV` tyCoFVsOfCo co) f bound_vars acc
 tyCoFVsOfType (CoercionTy co)    f bound_vars acc = tyCoFVsOfCo co f bound_vars acc
@@ -741,15 +741,16 @@ almost_devoid_co_var_of_cos (co:cos) cv
   && almost_devoid_co_var_of_cos cos cv
 
 almost_devoid_co_var_of_type :: Type -> CoVar -> Bool
-almost_devoid_co_var_of_type (TyVarTy _) _ = True
+almost_devoid_co_var_of_type (TyVarTy _ _) _ = True
 almost_devoid_co_var_of_type (TyConApp _ tys) cv
   = almost_devoid_co_var_of_types tys cv
 almost_devoid_co_var_of_type (LitTy {}) _ = True
 almost_devoid_co_var_of_type (AppTy fun arg) cv
   = almost_devoid_co_var_of_type fun cv
   && almost_devoid_co_var_of_type arg cv
-almost_devoid_co_var_of_type (FunTy _ w arg res) cv
+almost_devoid_co_var_of_type (FunTy _ w m arg res) cv
   = almost_devoid_co_var_of_type w cv
+  && almost_devoid_co_var_of_type m cv
   && almost_devoid_co_var_of_type arg cv
   && almost_devoid_co_var_of_type res cv
 almost_devoid_co_var_of_type (ForAllTy (Bndr v _) ty) cv
@@ -786,10 +787,10 @@ visVarsOfType orig_ty = Pair invis_vars vis_vars
     Pair invis_vars1 vis_vars = go orig_ty
     invis_vars = invis_vars1 `minusVarSet` vis_vars
 
-    go (TyVarTy tv)      = Pair (tyCoVarsOfType $ tyVarKind tv) (unitVarSet tv)
+    go (TyVarTy tv _)      = Pair (tyCoVarsOfType $ tyVarKind tv) (unitVarSet tv)
     go (AppTy t1 t2)     = go t1 `mappend` go t2
     go (TyConApp tc tys) = go_tc tc tys
-    go (FunTy _ w t1 t2) = go w `mappend` go t1 `mappend` go t2
+    go (FunTy _ w m t1 t2) = go m `mappend` go w `mappend` go t1 `mappend` go t2
     go (ForAllTy (Bndr tv _) ty)
       = ((`delVarSet` tv) <$> go ty) `mappend`
         (invisible (tyCoVarsOfType $ varType tv))
@@ -821,9 +822,9 @@ isInjectiveInType tv ty
   = go ty
   where
     go ty | Just ty' <- rewriterView ty = go ty'
-    go (TyVarTy tv')                    = tv' == tv
+    go (TyVarTy tv' _)                    = tv' == tv
     go (AppTy f a)                      = go f || go a
-    go (FunTy _ w ty1 ty2)              = go w || go ty1 || go ty2
+    go (FunTy _ w m ty1 ty2)            = go m || go w || go ty1 || go ty2
     go (TyConApp tc tys)                = go_tc tc tys
     go (ForAllTy (Bndr tv' _) ty)       = go (tyVarKind tv')
                                           || (tv /= tv' && go ty)
@@ -865,9 +866,9 @@ injectiveVarsOfType :: Bool   -- ^ Should we look under injective type families?
 injectiveVarsOfType look_under_tfs = go
   where
     go ty | Just ty' <- rewriterView ty = go ty'
-    go (TyVarTy v)                      = unitFV v `unionFV` go (tyVarKind v)
+    go (TyVarTy v _)                      = unitFV v `unionFV` go (tyVarKind v)
     go (AppTy f a)                      = go f `unionFV` go a
-    go (FunTy _ w ty1 ty2)              = go w `unionFV` go ty1 `unionFV` go ty2
+    go (FunTy _ w m ty1 ty2)            = go m `unionFV` go w `unionFV` go ty1 `unionFV` go ty2
     go (TyConApp tc tys)                = go_tc tc tys
     go (ForAllTy (Bndr tv _) ty)        = go (tyVarKind tv) `unionFV` delFV tv (go ty)
     go LitTy{}                          = emptyFV
@@ -925,9 +926,9 @@ invisibleVarsOfType = go
   where
     go ty                 | Just ty' <- coreView ty
                           = go ty'
-    go (TyVarTy v)        = go (tyVarKind v)
+    go (TyVarTy v _)        = go (tyVarKind v)
     go (AppTy f a)        = go f `unionFV` go a
-    go (FunTy _ w ty1 ty2) = go w `unionFV` go ty1 `unionFV` go ty2
+    go (FunTy _ w m ty1 ty2) = go m `unionFV` go w `unionFV` go ty1 `unionFV` go ty2
     go (TyConApp tc tys)  = tyCoFVsOfTypes invisibles `unionFV`
                             invisibleVarsOfTypes visibles
       where (invisibles, visibles) = partitionInvisibleTypes tc tys
@@ -1020,7 +1021,7 @@ tyConsOfType ty
      go (LitTy {})                  = emptyUniqSet
      go (TyConApp tc tys)           = go_tc tc `unionUniqSets` tyConsOfTypes tys
      go (AppTy a b)                 = go a `unionUniqSets` go b
-     go (FunTy af w a b)            = go w `unionUniqSets`
+     go (FunTy af w m a b)            = go m `unionUniqSets` go w `unionUniqSets`
                                       go a `unionUniqSets` go b
                                       `unionUniqSets` go_tc (funTyFlagTyCon af)
      go (ForAllTy (Bndr tv _) ty)   = go ty `unionUniqSets` go (varType tv)
@@ -1150,7 +1151,7 @@ occCheckExpand vs_to_avoid ty
           -- The VarSet is the set of variables we are trying to avoid
           -- The VarEnv carries mappings necessary
           -- because of kind expansion
-    go (as, env) ty@(TyVarTy tv)
+    go (as, env) ty@(TyVarTy tv _)
       | Just tv' <- lookupVarEnv env tv = return (mkTyVarTy tv')
       | bad_var_occ as tv               = Nothing
       | otherwise                       = return ty
@@ -1159,11 +1160,12 @@ occCheckExpand vs_to_avoid ty
     go cxt (AppTy ty1 ty2) = do { ty1' <- go cxt ty1
                                 ; ty2' <- go cxt ty2
                                 ; return (AppTy ty1' ty2') }
-    go cxt ty@(FunTy _ w ty1 ty2)
+    go cxt ty@(FunTy _ w m ty1 ty2)
        = do { w'   <- go cxt w
+            ; m'   <- go cxt m
             ; ty1' <- go cxt ty1
             ; ty2' <- go cxt ty2
-            ; return (ty { ft_mult = w', ft_arg = ty1', ft_res = ty2' }) }
+            ; return (ty { ft_mult = w', ft_mat = m', ft_arg = ty1', ft_res = ty2' }) }
     go cxt@(as, env) (ForAllTy (Bndr tv vis) body_ty)
        = do { ki' <- go cxt (varType tv)
             ; let tv'  = setVarType tv ki'
