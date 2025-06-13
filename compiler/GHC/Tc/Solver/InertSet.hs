@@ -1744,7 +1744,7 @@ kickOutRewritableLHS ko_spec new_fr@(_, new_role)
     tv_at_head :: (TyVar -> Bool) -> Type -> Bool
     tv_at_head is_tv = go
       where
-        go (Rep.TyVarTy tv)    = is_tv tv
+        go (Rep.TyVarTy tv _)    = is_tv tv
         go (Rep.AppTy fun _)   = go fun
         go (Rep.CastTy ty _)   = go ty
         go (Rep.TyConApp {})   = False

@@ -86,7 +86,7 @@ import GHC.Data.Maybe ( expectJust )
 import Data.List        ( partition )
 import Data.List.NonEmpty ( NonEmpty (..) )
 import Data.Char        ( ord )
-
+import GHC.Core.TyCo.Rep ( templateMatchabilityVar )
 infixl 4 `mkCoreApp`, `mkCoreApps`
 
 {-
@@ -1249,7 +1249,7 @@ aBSENT_CONSTRAINT_ERROR_ID -- See Note [aBSENT_ERROR_ID]
  where
    -- absentConstraintError :: forall (a :: Constraint). Addr# -> a
    absent_ty = mkSpecForAllTys [alphaConstraintTyVar] $
-               mkFunTy visArgConstraintLike ManyTy
+               mkFunTy visArgConstraintLike ManyTy (mkTyVarTy templateMatchabilityVar)
                        addrPrimTy (mkTyVarTy alphaConstraintTyVar)
 
 

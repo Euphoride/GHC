@@ -32,8 +32,10 @@ import GHC.Utils.Outputable
 import GHC.Utils.Constants (debugIsOn)
 import GHC.Utils.Misc
 import GHC.Utils.Panic
+import GHC.Utils.Monad (zipWith3M)
 
 import Control.Monad   ( zipWithM )
+import Data.Maybe (fromMaybe)
 
 {-
 %************************************************************************
@@ -273,26 +275,26 @@ opt_co4, opt_co4' :: LiftingContext -> SwapFlag -> ReprFlag
 -- Usually it just goes straight to opt_co4'
 opt_co4 = opt_co4'
 
-{-
-opt_co4 env sym rep r co
-  = pprTrace "opt_co4 {"
-   ( vcat [ text "Sym:" <+> ppr sym
-          , text "Rep:" <+> ppr rep
-          , text "Role:" <+> ppr r
-          , text "Co:" <+> ppr co ]) $
-   assert (r == coercionRole co )    $
-   let result = opt_co4' env sym rep r co in
-   pprTrace "opt_co4 }" (ppr co $$ text "---" $$ ppr result) $
-   assertPpr (res_role == coercionRole result)
-             (vcat [ text "Role:" <+> ppr r
-                   , text "Result: " <+>  ppr result
-                   , text "Result type:" <+> ppr (coercionType result) ]) $
-   result
 
-  where
-    res_role | rep       = Representational
-             | otherwise = r
--}
+-- opt_co4 env sym rep r co
+--   = pprTrace "opt_co4 {"
+--    ( vcat [ text "Sym:" <+> ppr sym
+--           , text "Rep:" <+> ppr rep
+--           , text "Role:" <+> ppr r
+--           , text "Co:" <+> ppr co ]) $
+--    assert (r == coercionRole co )    $
+--    let result = opt_co4' env sym rep r co in
+--    pprTrace "opt_co4 }" (ppr co $$ text "---" $$ ppr result) $
+--    assertPpr (res_role == coercionRole result)
+--              (vcat [ text "Role:" <+> ppr r
+--                    , text "Result: " <+>  ppr result
+--                    , text "Result type:" <+> ppr (coercionType result) ]) $
+--    result
+
+--   where
+--     res_role | rep       = Representational
+--              | otherwise = r
+
 
 opt_co4' env sym rep r (Refl ty)
   = assertPpr (r == Nominal)
@@ -364,13 +366,15 @@ opt_co4' env sym rep r (ForAllCo { fco_tcv = tv, fco_visL = visL, fco_visR = vis
   where
     !(visL', visR') = swapSym sym (visL, visR)
 
-opt_co4' env sym rep r (FunCo _r afl afr cow co1 co2)
+opt_co4' env sym rep r (FunCo _r afl afr cow com co1 co2)
   = assert (r == _r) $
-    mkFunCo2 r' afl' afr' cow' co1' co2'
+    mkFunCo2 r' afl' afr' cow' com co1' co2'
   where
     co1' = opt_co4 env sym rep r co1
     co2' = opt_co4 env sym rep r co2
     cow' = opt_co1 env sym cow
+    -- com' = opt_co1 env sym com
+
     !r' | rep       = Representational
         | otherwise = r
     !(afl', afr') = swapSym sym (afl, afr)
@@ -804,12 +808,12 @@ opt_trans_rule is in_co1@(TyConAppCo r1 tc1 cos1) in_co2@(TyConAppCo r2 tc2 cos2
     fireTransRule "PushTyConApp" in_co1 in_co2 $
     mkTyConAppCo r1 tc1 (opt_transList is cos1 cos2)
 
-opt_trans_rule is in_co1@(FunCo r1 afl1 afr1 w1 co1a co1b)
-                  in_co2@(FunCo r2 afl2 afr2 w2 co2a co2b)
+opt_trans_rule is in_co1@(FunCo r1 afl1 afr1 w1 m1 co1a co1b)
+                  in_co2@(FunCo r2 afl2 afr2 w2 m2 co2a co2b)
   = assert (r1 == r2)     $     -- Just like the TyConAppCo/TyConAppCo case
     assert (afr1 == afl2) $
     fireTransRule "PushFun" in_co1 in_co2 $
-    mkFunCo2 r1 afl1 afr2 (opt_trans is w1 w2)
+    mkFunCo2 r1 afl1 afr2 (opt_trans is w1 w2) (opt_trans is m1 m2)
                           (opt_trans is co1a co2a)
                           (opt_trans is co1b co2b)
 
@@ -858,7 +862,7 @@ opt_trans_rule is co1 co2
       mkForAllCo tv1 visL visR (opt_trans is eta1 eta2) (opt_trans is' r1 r2')
     where
       is' = is `extendInScopeSet` tv1
-      r2' = substCoWithUnchecked [tv2] [mkCastTy (TyVarTy tv1) eta1] r2
+      r2' = substCoWithUnchecked [tv2] [mkCastTy (TyVarTy tv1 MaybeUnmatchable) eta1] r2
 
 -- Push transitivity inside forall
 -- forall over coercions.
@@ -1224,7 +1228,8 @@ matchNewtypeBranch sym axr co
                               (pickSwap sym rhs (mkTyConApp tc lhs))
                               co
   , all (`isMappedByLC` subst) qtvs
-  = zipWithM (liftCoSubstTyVar subst) roles qtvs
+  -- ! FLAG -> Have to figure out how to thread matchability into coaxiomrule too!
+  = zipWith3M (liftCoSubstTyVar subst) roles qtvs (repeat MaybeUnmatchable)
 
   | otherwise
   = Nothing
@@ -1298,7 +1303,7 @@ etaForAllCo_ty_maybe co
   , (role /= Nominal) || (vis1 `eqForAllVis` vis2)
   , let kind_co = mkSelCo SelForAll co
   = Just ( tv1, vis1, vis2, kind_co
-         , mkInstCo co (mk_grefl_right_co Nominal (TyVarTy tv1) kind_co))
+         , mkInstCo co (mk_grefl_right_co Nominal (TyVarTy tv1 MaybeUnmatchable) kind_co))
 
   | otherwise
   = Nothing

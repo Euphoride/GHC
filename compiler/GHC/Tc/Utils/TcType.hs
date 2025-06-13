@@ -951,7 +951,7 @@ tcTyFamInstsAndVisX = go
   where
     go is_invis_arg ty
       | Just exp_ty <- coreView ty     = go is_invis_arg exp_ty
-    go _ (TyVarTy _)                   = []
+    go _ (TyVarTy _ _)                   = []
     go is_invis_arg (TyConApp tc tys)
       | isTypeFamilyTyCon tc
       = [(is_invis_arg, tc, take (tyConArity tc) tys)]
@@ -960,7 +960,7 @@ tcTyFamInstsAndVisX = go
     go _            (LitTy {})         = []
     go is_invis_arg (ForAllTy bndr ty) = go is_invis_arg (binderType bndr)
                                          ++ go is_invis_arg ty
-    go is_invis_arg (FunTy _ w ty1 ty2)  = go is_invis_arg w
+    go is_invis_arg (FunTy _ w m ty1 ty2)  = go is_invis_arg w ++ go is_invis_arg m
                                          ++ go is_invis_arg ty1
                                          ++ go is_invis_arg ty2
     go is_invis_arg ty@(AppTy _ _)     =
@@ -1039,11 +1039,11 @@ any_rewritable role tv_pred tc_pred ty
       | otherwise
       = go_tc under_fam bvs rl tc tys
 
-    go uf bvs rl (TyVarTy tv)        = go_tv uf bvs rl tv
+    go uf bvs rl (TyVarTy tv _)        = go_tv uf bvs rl tv
     go _  _    _ (LitTy {})          = False
     go uf bvs rl (AppTy fun arg)     = go uf bvs rl fun || go uf bvs NomEq arg
-    go uf bvs rl (FunTy _ w arg res) = go uf bvs NomEq arg_rep || go uf bvs NomEq res_rep ||
-                                       go uf bvs rl arg || go uf bvs rl res || go uf bvs NomEq w
+    go uf bvs rl (FunTy _ w m arg res) = go uf bvs NomEq arg_rep || go uf bvs NomEq res_rep ||
+                                       go uf bvs rl arg || go uf bvs rl res || go uf bvs NomEq w || go uf bvs NomEq m
       where arg_rep = getRuntimeRep arg -- forgetting these causes #17024
             res_rep = getRuntimeRep res
     go uf bvs rl (ForAllTy tv ty)   = go uf (bvs `extendVarSet` binderVar tv) rl ty
@@ -1284,11 +1284,11 @@ isConcreteTyVarTy = isJust . isConcreteTyVarTy_maybe
 -- | Is this type a concrete type variable? If so, return
 -- the associated 'TcTyVar' and 'ConcreteTvOrigin'.
 isConcreteTyVarTy_maybe :: TcType -> Maybe (TcTyVar, ConcreteTvOrigin)
-isConcreteTyVarTy_maybe (TyVarTy tv) = (tv, ) <$> isConcreteTyVar_maybe tv
+isConcreteTyVarTy_maybe (TyVarTy tv _) = (tv, ) <$> isConcreteTyVar_maybe tv
 isConcreteTyVarTy_maybe _            = Nothing
 
 isMetaTyVarTy :: TcType -> Bool
-isMetaTyVarTy (TyVarTy tv) = isMetaTyVar tv
+isMetaTyVarTy (TyVarTy tv _) = isMetaTyVar tv
 isMetaTyVarTy _            = False
 
 metaTyVarInfo :: TcTyVar -> MetaInfo
@@ -1414,7 +1414,7 @@ tcMkDFunPhiTy preds res = foldr (tcMkInvisFunTy ConstraintLike) res preds
 getDFunTyKey :: Type -> OccName -- Get some string from a type, to be used to
                                 -- construct a dictionary function name
 getDFunTyKey ty | Just ty' <- coreView ty = getDFunTyKey ty'
-getDFunTyKey (TyVarTy tv)            = getOccName tv
+getDFunTyKey (TyVarTy tv _)            = getOccName tv
 getDFunTyKey (TyConApp tc _)         = getOccName tc
 getDFunTyKey (LitTy x)               = getDFunTyLitKey x
 getDFunTyKey (AppTy fun _)           = getDFunTyKey fun
@@ -1623,7 +1623,7 @@ tcSplitFunTy_maybe :: Type -> Maybe (Scaled Type, Type)
 -- Only splits function (->) and (-=>), not (=>) or (==>)
 tcSplitFunTy_maybe ty
   | Just ty' <- coreView ty = tcSplitFunTy_maybe ty'
-tcSplitFunTy_maybe (FunTy { ft_af = af, ft_mult = w, ft_arg = arg, ft_res = res })
+tcSplitFunTy_maybe (FunTy { ft_af = af, ft_mult = w, ft_arg = arg, ft_res = res, ft_mat = mat })
   | isVisibleFunArg af = Just (Scaled w arg, res)
 tcSplitFunTy_maybe _   = Nothing
         -- Note the isVisibleFunArg guard
@@ -1694,7 +1694,7 @@ tcIsTyVarTy ty | Just ty' <- coreView ty = tcIsTyVarTy ty'
 tcIsTyVarTy (CastTy ty _) = tcIsTyVarTy ty  -- look through casts, as
                                             -- this is only used for
                                             -- e.g., FlexibleContexts
-tcIsTyVarTy (TyVarTy _)   = True
+tcIsTyVarTy (TyVarTy _ _)   = True
 tcIsTyVarTy _             = False
 
 -----------------------
@@ -2330,13 +2330,13 @@ pSizeTypes = pSizeTypesX emptyVarSet pSizeZero
 -- This ignores coercions, as coercions aren't user-written
 pSizeTypeX :: VarSet -> Type -> PatersonSize
 pSizeTypeX bvs ty | Just exp_ty <- coreView ty = pSizeTypeX bvs exp_ty
-pSizeTypeX bvs (TyVarTy tv)
+pSizeTypeX bvs (TyVarTy tv _)
   | tv `elemVarSet` bvs                  = pSizeOne
   | otherwise                            = PS_Vanilla { ps_tvs = [tv], ps_size = 1 }
 pSizeTypeX _   (LitTy {})                = pSizeOne
 pSizeTypeX bvs (TyConApp tc tys)         = pSizeTyConAppX bvs tc tys
 pSizeTypeX bvs (AppTy fun arg)           = pSizeTypeX bvs fun `addPSize` pSizeTypeX bvs arg
-pSizeTypeX bvs (FunTy _ w arg res)       = pSizeTypeX bvs w `addPSize` pSizeTypeX bvs arg `addPSize`
+pSizeTypeX bvs (FunTy _ w m arg res)       = pSizeTypeX bvs m `addPSize` pSizeTypeX bvs w `addPSize` pSizeTypeX bvs arg `addPSize`
                                            pSizeTypeX bvs res
 pSizeTypeX bvs (ForAllTy (Bndr tv _) ty) = pSizeTypeX bvs (tyVarKind tv) `addPSize`
                                            pSizeTypeX (bvs `extendVarSet` tv) ty

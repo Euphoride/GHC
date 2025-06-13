@@ -431,6 +431,9 @@ zonkDelayedError (DE_NotConcrete err)
   = DE_NotConcrete <$> zonkNotConcreteError err
 zonkDelayedError (DE_Multiplicity mult_co loc)
   = DE_Multiplicity <$> zonkCo mult_co <*> pure loc
+-- ! FLAG -> non exhaustive
+zonkDelayedError (DE_Mat mat_co loc)
+  = DE_Mat <$> zonkCo mat_co <*> pure loc
 
 zonkHole :: Hole -> ZonkM Hole
 zonkHole hole@(Hole { hole_ty = ty })
@@ -676,6 +679,8 @@ tidyDelayedError env (DE_Hole hole)       = DE_Hole        $ tidyHole env hole
 tidyDelayedError env (DE_NotConcrete err) = DE_NotConcrete $ tidyConcreteError env err
 tidyDelayedError env (DE_Multiplicity mult_co loc)
   = DE_Multiplicity (tidyCo env mult_co) loc
+tidyDelayedError env (DE_Mat mat_co loc) = DE_Mat (tidyCo env mat_co) loc
+-- !FLAG -> non exhaustive
 
 tidyConcreteError :: TidyEnv -> NotConcreteError -> NotConcreteError
 tidyConcreteError env err@(NCE_FRR { nce_frr_origin = frr_orig })

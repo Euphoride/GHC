@@ -42,7 +42,94 @@ import GHC.Types.Unique.Supply
 
 import GHC.Utils.Misc
 import GHC.Utils.Outputable
+-- import GHC.Tc.Gen.HsType (quantifyMatchabilities)
 import GHC.Utils.Panic
+import GHC.Core.TyCo.Rep (Type(..))
+import Data.List(nubBy)
+import Data.Maybe(mapMaybe)
+
+newtype StateM s a = StateM (s -> (a, s))
+
+instance Functor (StateM s) where
+  fmap f (StateM g) = StateM $ \s -> let (a, s') = g s in (f a, s')
+
+instance Applicative (StateM s) where
+  pure a = StateM $ \s -> (a, s)
+  StateM f <*> StateM g = StateM $ \s -> 
+    let (fab, s') = f s
+        (a, s'') = g s'
+    in (fab a, s'')
+
+instance Monad (StateM s) where
+  StateM g >>= f = StateM $ \s ->
+    let (a, s') = g s
+        StateM h = f a
+    in h s'
+
+runStateM :: StateM s a -> s -> (a, s)
+runStateM (StateM f) = f
+
+get :: StateM s s
+get = StateM $ \s -> (s, s)
+
+put :: s -> StateM s ()
+put s = StateM $ \_ -> ((), s)
+
+modify :: (s -> s) -> StateM s ()
+modify f = StateM $ \s -> ((), f s)
+
+
+collectBndrs :: Type -> StateM [Type] Type
+collectBndrs (ForAllTy bndr ty) = do
+  ty' <- collectBndrs ty
+
+  seen_tvs <- get_and_reset
+
+  return $ ForAllTy bndr (top_level (ty', seen_tvs))
+
+collectBndrs (TyVarTy tv m) = return (TyVarTy tv m)
+collectBndrs (LitTy lit) = return (LitTy lit)
+collectBndrs (CoercionTy co) = return (CoercionTy co)
+
+collectBndrs (AppTy t1 t2) = AppTy <$> collectBndrs t1 <*> collectBndrs t2
+collectBndrs (TyConApp tc args) = TyConApp tc <$> mapM collectBndrs args
+collectBndrs (FunTy af mult mat arg res) = do
+  case get_tv mat of
+    Just tv -> seen tv
+    Nothing -> return ()
+
+  FunTy af mult mat <$> collectBndrs arg <*> collectBndrs res
+collectBndrs (CastTy ty co) = do
+  ty' <- collectBndrs ty
+  return $ CastTy ty' co
+
+get_and_reset :: StateM [Type] [Type]
+get_and_reset = do
+  tvs <- get
+  put []
+  return $ nubBy eqType tvs       -- This is super inefficent
+
+get_tv :: Type -> Maybe Type
+get_tv (TyVarTy tv m) = Just $ TyVarTy tv m
+get_tv _ = Nothing
+
+seen :: Type -> StateM [Type] ()
+seen tv = modify (tv:)
+
+get_bndr :: Type -> Maybe InvisTVBinder
+get_bndr (TyVarTy tv _) = Just $ Bndr tv SpecifiedSpec
+get_bndr _ = Nothing
+
+top_level :: (Type, [Type]) -> Type
+top_level (ty, tvs) = mkInvisForAllTys (mapMaybe get_bndr tvs) ty
+
+-- The idea here is that we recurse through Type's structure. If we see a FunTy, we should
+-- grab the matchability tyvar associated with the FunTy if it is a tyvar. So we accumulate
+-- this list of tyvars. Then, if we see a forall, we embed inside the forall's body another forall
+-- being for the binders for the matchability tyvars. 
+-- if we're at the top level and still have those tyvars then add those binders too
+quantifyMatchabilites :: Type -> Type
+quantifyMatchabilites tv = top_level $ runStateM (collectBndrs tv) []
 
 
 mkNewTyConRhs :: Name -> TyCon -> DataCon -> TcRnIf m n AlgTyConRhs
@@ -69,7 +156,7 @@ mkNewTyConRhs tycon_name tycon con
       | [Scaled _ arg_ty] <- dataConRepArgTys con
       , null $ dataConExTyCoVars con
       = substTyWith (dataConUnivTyVars con)
-                         (mkTyVarTys tvs) arg_ty
+                         (mkTyVarTys tvs) $ arg_ty
         -- Instantiate the newtype's RHS with the
         -- type variables from the tycon
         -- NB: a newtype DataCon has a type that must look like

@@ -55,7 +55,7 @@ import Data.List( deleteFirstsBy )
 
 import Control.Monad
 import Data.Foldable ( traverse_ )
-import Data.Maybe ( mapMaybe )
+import Data.Maybe ( mapMaybe, fromMaybe )
 import qualified Data.Semigroup as S
 import Data.Void( Void )
 

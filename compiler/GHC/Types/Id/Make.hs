@@ -1985,7 +1985,7 @@ noinlineConstraintId = pcMiscPrelId noinlineConstraintIdName ty info
   where
     info = noCafIdInfo
     ty   = mkSpecForAllTys [alphaConstraintTyVar] $
-           mkFunTy visArgConstraintLike ManyTy alphaTy alphaConstraintTy
+           mkFunTy visArgConstraintLike ManyTy matchableDataConTy alphaTy alphaConstraintTy
 
 ------------------------------------------------
 nospecId :: Id -- See Note [nospecId magic]
@@ -2048,9 +2048,10 @@ leftSectionId = pcRepPolyId leftSectionName ty concs info
     ty  = mkInfForAllTys  [runtimeRep1TyVar,runtimeRep2TyVar, multiplicityTyVar1] $
           mkSpecForAllTys [openAlphaTyVar,  openBetaTyVar]    $
           exprType body
-    [f,x] = mkTemplateLocals [mkVisFunTy mult openAlphaTy openBetaTy, openAlphaTy]
+    [f,x] = mkTemplateLocals [mkVisFunTy mult (matchableDataConTy) openAlphaTy openBetaTy, openAlphaTy]
 
     mult = mkTyVarTy multiplicityTyVar1 :: Mult
+    -- mat = (mkTyVarTy templateMatchabilityVar) :: Mat
     xmult = setIdMult x mult
 
     rhs  = mkLams [ runtimeRep1TyVar, runtimeRep2TyVar, multiplicityTyVar1

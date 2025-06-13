@@ -7,7 +7,8 @@ module GHC.Tc.Instance.Class (
      AssocInstInfo(..), isNotAssociated,
      lookupHasFieldLabel,
      matchMatchable,
-     isMatchableTyCon
+     isMatchableTyCon,
+     mkMatchableInst
   ) where
 
 import GHC.Prelude
@@ -46,7 +47,7 @@ import GHC.Core.Predicate
 import GHC.Core.Coercion
 import GHC.Core.InstEnv
 import GHC.Core.Type
-import GHC.Core.Make ( mkCharExpr, mkNaturalExpr, mkStringExprFS, mkCoreLams )
+import GHC.Core.Make ( mkCharExpr, mkNaturalExpr, mkStringExprFS, mkCoreLams, mkCoreConApps )
 import GHC.Core.DataCon
 import GHC.Core.TyCon
 import GHC.Core.Class
@@ -71,6 +72,9 @@ import GHC.Tc.Errors.Types
 
 import Data.Functor
 import Data.Maybe
+
+import GHC.Types.Var.Set (isEmptyVarSet)
+import GHC.Tc.Zonk.TcType (zonkTcType)
 
 {- *******************************************************************
 *                                                                    *
@@ -151,7 +155,8 @@ matchGlobalInst dflags short_cut clas tys mb_loc
   | cls_name == knownCharClassName     = matchKnownChar   dflags short_cut clas tys
   | isCTupleClass clas                 = matchCTuple                       clas tys
   | cls_name == typeableClassName      = matchTypeable                     clas tys
-  | cls_name == matchableClassName     = matchMatchable                         tys
+  | cls_name == matchableClassName     = matchMatchable                    clas tys
+  | cls_name == unmatchableClassName   = matchUnmatchable                  clas tys
   | cls_name == withDictClassName      = matchWithDict                          tys
   | cls_name == dataToTagClassName     = matchDataToTag                    clas tys
   | cls_name == hasFieldClassName      = matchHasField    dflags short_cut clas tys mb_loc
@@ -939,6 +944,7 @@ matchDataToTag dataToTagClass [levity, dty] = do
             methodCo = mkFunCo Representational
                                FTF_T_T
                                (mkNomReflCo ManyTy)
+                               (mkNomReflCo matchableDataConTy)
                                (mkSymCo repCo)
                                (mkReflCo Representational intPrimTy)
             dataToTagDataCon = tyConSingleDataCon (classTyCon dataToTagClass)
@@ -963,21 +969,47 @@ matchDataToTag _ _ = pure NoInstance
 *                                                                     *
 ***********************************************************************-}
 
+is_higher_kinded :: Type -> Bool
+is_higher_kinded = not . null . fst . splitPiTys
 
--- !FLAG -> very bad. we assume nominal always. fix this. 
+-- | Check if a kind is polykinded (contains kind variables)
+is_polykinded :: Type -> Bool
+is_polykinded ty = not $ isEmptyVarSet $ tyCoVarsOfType ty
+
 isMatchableTyCon :: TyCon -> Role -> Bool
 isMatchableTyCon tc role = isInjectiveTyCon tc role && isGenerativeTyCon tc role
 
--- !FLAG -> What role here?
-matchMatchable :: [Type] -> TcM ClsInstResult
-matchMatchable [ty] = case (tcSplitTyConApp_maybe ty) of
-  Just (tycon, _) | isMatchableTyCon tycon Representational ->
-      return $ OneInst { cir_new_theta = []
-                       , cir_mk_ev = \_ -> evCoercion (mkNomReflCo ty)
+
+mkMatchableInst :: Class -> [Type] -> [PredType] -> TcM ClsInstResult
+mkMatchableInst cls [ki, ty] theta = return $ OneInst { cir_new_theta = theta
+                       , cir_mk_ev = \_ -> EvExpr (mkCoreConApps (classDataCon cls) [Type ki, Type ty])
                        , cir_canonical = EvCanonical
                        , cir_what = BuiltinInstance }
-  _ -> return NoInstance
-matchMatchable _    = return NoInstance
+mkMatchableInst _ _ _ = return NoInstance
+
+matchMatchable :: Class -> [Type] -> TcM ClsInstResult
+matchMatchable cls [ki, CastTy ty' _] = matchMatchable cls [ki, ty']
+
+matchMatchable cls tys' = do
+  -- tys' <- mapM (liftZonkM . zonkTcType) tys
+
+  case tys' of 
+    [ki, ty] | isTYPEorCONSTRAINT ki                                                     -> mkMatchableInst cls tys' []
+    [ki, ty] | not (is_higher_kinded ki || is_polykinded ki)                             -> mkMatchableInst cls tys' []
+    [ki, ty] | Just (tc, _) <- tcSplitTyConApp_maybe ty, isMatchableTyCon tc Nominal     -> mkMatchableInst cls tys' []
+    [ki, AppTy tyh _] -> mkMatchableInst cls tys' [mkClassPred cls [typeKind tyh, tyh]]
+    _                 -> return $ NoInstance
+
+
+matchUnmatchable :: Class -> [Type] -> TcM ClsInstResult
+matchUnmatchable cls [_, ty] = return $ OneInst {
+  cir_new_theta = [],
+  cir_mk_ev = \_ -> EvExpr (mkCoreConApps (classDataCon cls) [Type (typeKind ty), Type ty]),
+  cir_canonical = EvCanonical,
+  cir_what = BuiltinInstance
+}
+matchUnmatchable _ _ = return NoInstance
+
 
 -- | Assumes that we've checked that this is the 'Typeable' class,
 -- and it was applied to the correct argument.
@@ -987,7 +1019,7 @@ matchTypeable clas [k,t]  -- clas = Typeable
   | isForAllTy k = return NoInstance
 
   -- Functions; but only with a visible argment
-  | Just (af,mult,arg,ret) <- splitFunTy_maybe t
+  | Just (af,mult,_,arg,ret) <- splitFunTy_maybe t
   = if isVisibleFunArg af
     then doFunTy clas t mult arg ret
     else return NoInstance

@@ -147,6 +147,8 @@ module GHC.Core.Type (
         isOneTy, isManyTy,
         isLinearType,
 
+        isMatchabilityVar,
+
         -- * Main data types representing Kinds
         Kind,
 
@@ -246,7 +248,7 @@ import {-# SOURCE #-} GHC.Builtin.Types
    , typeSymbolKind, liftedTypeKind, unliftedTypeKind
    , constraintKind, zeroBitTypeKind
    , manyDataConTy, oneDataConTy
-   , liftedRepTy, unliftedRepTy, zeroBitRepTy )
+   , liftedRepTy, unliftedRepTy, zeroBitRepTy, matchableDataConTy, unmatchableDataConTy )
 
 import GHC.Types.Name( Name )
 import GHC.Builtin.Names
@@ -274,6 +276,8 @@ import GHC.Data.FastString
 
 import GHC.Data.Maybe   ( orElse, isJust, firstJust )
 import GHC.List (build)
+
+import GHC.Core.TyCo.Rep( defaultMatchability )
 
 -- $type_classification
 -- #type_classification#
@@ -508,10 +512,10 @@ expandTypeSynonyms ty
         expanded_tys = (map (go subst) tys)
 
     go _     (LitTy l)     = LitTy l
-    go subst (TyVarTy tv)  = substTyVar subst tv
+    go subst (TyVarTy tv m)  = substTyVar subst tv m
     go subst (AppTy t1 t2) = mkAppTy (go subst t1) (go subst t2)
-    go subst ty@(FunTy _ mult arg res)
-      = ty { ft_mult = go subst mult, ft_arg = go subst arg, ft_res = go subst res }
+    go subst ty@(FunTy _ mult mat arg res)
+      = ty { ft_mult = go subst mult, ft_arg = go subst arg, ft_res = go subst res, ft_mat = go subst mat }
     go subst (ForAllTy (Bndr tv vis) t)
       = let (subst', tv') = substVarBndrUsing go subst tv in
         ForAllTy (Bndr tv' vis) (go subst' t)
@@ -534,8 +538,8 @@ expandTypeSynonyms ty
                           , fco_kind = kind_co, fco_body = co })
       = let (subst', tv', kind_co') = go_cobndr subst tv kind_co in
         mkForAllCo tv' visL visR kind_co' (go_co subst' co)
-    go_co subst (FunCo r afl afr w co1 co2)
-      = mkFunCo2 r afl afr (go_co subst w) (go_co subst co1) (go_co subst co2)
+    go_co subst (FunCo r afl afr w m co1 co2)
+      = mkFunCo2 r afl afr (go_co subst w) (go_co subst m) (go_co subst co1) (go_co subst co2)
     go_co subst (CoVarCo cv)
       = substCoVar subst cv
     go_co subst (AxiomCo ax cs)
@@ -732,9 +736,15 @@ isLevityVar = isLevityTy . tyVarKind
 isMultiplicityTy :: Type -> Bool
 isMultiplicityTy  = isNullaryTyConKeyApp multiplicityTyConKey
 
+isMatchabilityTy :: Type -> Bool
+isMatchabilityTy  = isNullaryTyConKeyApp matchabilityTyConKey
+
 -- | Is a tyvar of type 'Multiplicity'?
 isMultiplicityVar :: TyVar -> Bool
 isMultiplicityVar = isMultiplicityTy . tyVarKind
+
+isMatchabilityVar :: TyVar -> Bool
+isMatchabilityVar = isMatchabilityTy . tyVarKind
 
 --------------------------------------------
 --  Splitting RuntimeRep
@@ -906,15 +916,15 @@ mapTyCoX (TyCoMapper { tcm_tyvar = tyvar
     go_tys !_   []       = return []
     go_tys !env (ty:tys) = (:) <$> go_ty env ty <*> go_tys env tys
 
-    go_ty !env (TyVarTy tv)    = tyvar env tv
+    go_ty !env (TyVarTy tv _)    = tyvar env tv
     go_ty !env (AppTy t1 t2)   = mkAppTy <$> go_ty env t1 <*> go_ty env t2
     go_ty !_   ty@(LitTy {})   = return ty
     go_ty !env (CastTy ty co)  = mkCastTy <$> go_ty env ty <*> go_co env co
     go_ty !env (CoercionTy co) = CoercionTy <$> go_co env co
 
-    go_ty !env ty@(FunTy _ w arg res)
-      = do { w' <- go_ty env w; arg' <- go_ty env arg; res' <- go_ty env res
-           ; return (ty { ft_mult = w', ft_arg = arg', ft_res = res' }) }
+    go_ty !env ty@(FunTy _ w m arg res)
+      = do { w' <- go_ty env w; arg' <- go_ty env arg; res' <- go_ty env res; m' <- go_ty env m
+           ; return (ty { ft_mult = w', ft_arg = arg', ft_res = res', ft_mat = m' }) }
 
     go_ty !env ty@(TyConApp tc tys)
       | isTcTyCon tc
@@ -944,7 +954,7 @@ mapTyCoX (TyCoMapper { tcm_tyvar = tyvar
     go_co !env (Refl ty)                  = Refl <$> go_ty env ty
     go_co !env (GRefl r ty mco)           = mkGReflCo r <$> go_ty env ty <*> go_mco env mco
     go_co !env (AppCo c1 c2)              = mkAppCo <$> go_co env c1 <*> go_co env c2
-    go_co !env (FunCo r afl afr cw c1 c2) = mkFunCo2 r afl afr <$> go_co env cw
+    go_co !env (FunCo r afl afr cw m c1 c2) = mkFunCo2 r afl afr <$> go_co env cw <*> go_co env m
                                            <*> go_co env c1 <*> go_co env c2
     go_co !env (CoVarCo cv)               = covar env cv
     go_co !env (HoleCo hole)              = cohole env hole
@@ -1016,7 +1026,7 @@ getTyVar_maybe = repGetTyVar_maybe . coreFullView
 -- | Attempts to obtain the type variable underlying a 'Type', without
 -- any expansion
 repGetTyVar_maybe :: Type -> Maybe TyVar
-repGetTyVar_maybe (TyVarTy tv) = Just tv
+repGetTyVar_maybe (TyVarTy tv _) = Just tv
 repGetTyVar_maybe _            = Nothing
 
 isTyVarTy :: Type -> Bool
@@ -1026,8 +1036,8 @@ isTyVarTy ty = isJust (getTyVar_maybe ty)
 -- with the coercion. Thus, the co is :: kind tv ~N kind ty
 getCastedTyVar_maybe :: Type -> Maybe (TyVar, CoercionN)
 getCastedTyVar_maybe ty = case coreFullView ty of
-  CastTy (TyVarTy tv) co -> Just (tv, co)
-  TyVarTy tv             -> Just (tv, mkReflCo Nominal (tyVarKind tv))
+  CastTy (TyVarTy tv _) co -> Just (tv, co)
+  TyVarTy tv _             -> Just (tv, mkReflCo Nominal (tyVarKind tv))
   _                      -> Nothing
 
 
@@ -1119,8 +1129,8 @@ splitAppTyNoView_maybe :: HasDebugCallStack => Type -> Maybe (Type,Type)
 splitAppTyNoView_maybe (AppTy ty1 ty2)
   = Just (ty1, ty2)
 
-splitAppTyNoView_maybe (FunTy af w ty1 ty2)
-  | Just (tc, tys)   <- funTyConAppTy_maybe af w ty1 ty2
+splitAppTyNoView_maybe (FunTy af w m ty1 ty2)
+  | Just (tc, tys)   <- funTyConAppTy_maybe af w m ty1 ty2
   , Just (tys', ty') <- snocView tys
   = Just (TyConApp tc tys', ty')
 
@@ -1157,8 +1167,8 @@ splitAppTys ty = split ty ty []
             (tc_args1, tc_args2) = splitAt n tc_args
         in
         (TyConApp tc tc_args1, tc_args2 ++ args)
-    split _   (FunTy af w ty1 ty2) args
-      | Just (tc,tys) <- funTyConAppTy_maybe af w ty1 ty2
+    split _   (FunTy af w m ty1 ty2) args
+      | Just (tc,tys) <- funTyConAppTy_maybe af w m ty1 ty2
       = assert (null args )
         (TyConApp tc [], tys)
 
@@ -1175,8 +1185,8 @@ splitAppTysNoView ty = split ty []
             (tc_args1, tc_args2) = splitAt n tc_args
         in
         (TyConApp tc tc_args1, tc_args2 ++ args)
-    split (FunTy af w ty1 ty2) args
-      | Just (tc, tys) <- funTyConAppTy_maybe af w ty1 ty2
+    split (FunTy af w m ty1 ty2) args
+      | Just (tc, tys) <- funTyConAppTy_maybe af w m ty1 ty2
       = assert (null args )
         (TyConApp tc [], tys)
 
@@ -1328,44 +1338,46 @@ See #11714.
 -}
 
 -----------------------------------------------
-funTyConAppTy_maybe :: FunTyFlag -> Type -> Type -> Type
+funTyConAppTy_maybe :: FunTyFlag -> Type -> Type -> Type -> Type
                     -> Maybe (TyCon, [Type])
 -- ^ Given the components of a FunTy
 -- figure out the corresponding TyConApp.
-funTyConAppTy_maybe af mult arg res
+funTyConAppTy_maybe af mult mat arg res
   | Just arg_rep <- getRuntimeRep_maybe arg
   , Just res_rep <- getRuntimeRep_maybe res
   -- If you're changing the lines below, you'll probably want to adapt the
   -- `fUNTyCon` case of GHC.Core.Unify.unify_ty correspondingly.
-  , let args | isFUNArg af = [mult, arg_rep, res_rep, arg, res]
+  , let args | isFUNArg af = [mult, mat, arg_rep, res_rep, arg, res]
              | otherwise   = [      arg_rep, res_rep, arg, res]
   = Just $ (funTyFlagTyCon af, args)
   | otherwise
   = Nothing
 
+
 tyConAppFunTy_maybe :: HasDebugCallStack => TyCon -> [Type] -> Maybe Type
 -- ^ Return Just if this TyConApp should be represented as a FunTy
 tyConAppFunTy_maybe tc tys
-  | Just (af, mult, arg, res) <- ty_con_app_fun_maybe manyDataConTy tc tys
-            = Just (FunTy { ft_af = af, ft_mult = mult, ft_arg = arg, ft_res = res })
+  | Just (af, mult, mat, arg, res) <- ty_con_app_fun_maybe manyDataConTy matchableDataConTy tc tys
+            = Just (FunTy { ft_af = af, ft_mult = mult, ft_arg = arg, ft_res = res, ft_mat = mat })
   | otherwise = Nothing
 
 tyConAppFunCo_maybe :: HasDebugCallStack => Role -> TyCon -> [Coercion]
                     -> Maybe Coercion
 -- ^ Return Just if this TyConAppCo should be represented as a FunCo
 tyConAppFunCo_maybe r tc cos
-  | Just (af, mult, arg, res) <- ty_con_app_fun_maybe mult_refl tc cos
-  = Just (mkFunCo r af mult arg res)
+  | Just (af, mult,mat, arg, res) <- ty_con_app_fun_maybe mult_refl mat_refl tc cos
+  = Just (mkFunCo r af mult mat arg res)
   | otherwise
   = Nothing
   where
     mult_refl = mkReflCo (funRole r SelMult) manyDataConTy
+    mat_refl =  mkReflCo (funRole r SelMat) matchableDataConTy
 
-ty_con_app_fun_maybe :: (HasDebugCallStack, Outputable a) => a -> TyCon -> [a]
-                     -> Maybe (FunTyFlag, a, a, a)
+ty_con_app_fun_maybe :: (HasDebugCallStack, Outputable a) => a -> a -> TyCon -> [a]
+                     -> Maybe (FunTyFlag, a, a, a, a)
 {-# INLINE ty_con_app_fun_maybe #-}
 -- Specialise this function for its two call sites
-ty_con_app_fun_maybe many_ty_co tc args
+ty_con_app_fun_maybe many_ty_co mat_ty_co tc args
   | tc_uniq == fUNTyConKey     = fUN_case
   | tc_uniq == tcArrowTyConKey = non_FUN_case FTF_T_C
   | tc_uniq == ctArrowTyConKey = non_FUN_case FTF_C_T
@@ -1375,15 +1387,17 @@ ty_con_app_fun_maybe many_ty_co tc args
     tc_uniq = tyConUnique tc
 
     fUN_case
-      | (w:_r1:_r2:a1:a2:rest) <- args
+      | (w:m:_r1:_r2:a1:a2:rest) <- args
       = assertPpr (null rest) (ppr tc <+> ppr args) $
-        Just (FTF_T_T, w, a1, a2)
+        Just (FTF_T_T, w, m, a1, a2)
       | otherwise = Nothing
 
+    -- !FLAG -> idk here what goes in for here, i think depends on matchability of tc right?
+    -- !FLAG -> having matchable by default might break things then
     non_FUN_case ftf
       | (_r1:_r2:a1:a2:rest) <- args
       = assertPpr (null rest) (ppr tc <+> ppr args) $
-        Just (ftf, many_ty_co, a1, a2)
+        Just (ftf, many_ty_co, mat_ty_co, a1, a2)
       | otherwise
       = Nothing
 
@@ -1393,7 +1407,7 @@ mkFunctionType :: HasDebugCallStack => Mult -> Type -> Type -> Type
 mkFunctionType mult arg_ty res_ty
  = FunTy { ft_af = af, ft_arg = arg_ty, ft_res = res_ty
          , ft_mult = assertPpr mult_ok (ppr [mult, arg_ty, res_ty]) $
-                     mult }
+                     mult, ft_mat = defaultMatchability af }
   where
     af = chooseFunTyFlag arg_ty res_ty
     mult_ok = isVisibleFunArg af || isManyTy mult
@@ -1405,25 +1419,25 @@ mkScaledFunctionTys arg_tys res_ty
   where
     mk (Scaled mult arg_ty) res_ty
       = mkFunTy (chooseFunTyFlag arg_ty res_ty)
-                mult arg_ty res_ty
+                mult matchableDataConTy arg_ty res_ty
 
 chooseFunTyFlag :: HasDebugCallStack => Type -> Type -> FunTyFlag
 -- ^ See GHC.Types.Var Note [FunTyFlag]
 chooseFunTyFlag arg_ty res_ty
   = mkFunTyFlag (typeTypeOrConstraint arg_ty) (typeTypeOrConstraint res_ty)
 
-splitFunTy :: Type -> (Mult, Type, Type)
+splitFunTy :: Type -> (Mult, Mat, Type, Type)
 -- ^ Attempts to extract the multiplicity, argument and result types from a type,
 -- and panics if that is not possible. See also 'splitFunTy_maybe'
 splitFunTy ty = case splitFunTy_maybe ty of
-                   Just (_af, mult, arg, res) -> (mult,arg,res)
+                   Just (_af, mult, mat, arg, res) -> (mult,mat, arg,res)
                    Nothing                    -> pprPanic "splitFunTy" (ppr ty)
 
 {-# INLINE splitFunTy_maybe #-}
-splitFunTy_maybe :: Type -> Maybe (FunTyFlag, Mult, Type, Type)
+splitFunTy_maybe :: Type -> Maybe (FunTyFlag, Mult, Mat, Type, Type)
 -- ^ Attempts to extract the multiplicity, argument and result types from a type
 splitFunTy_maybe ty
-  | FunTy af w arg res <- coreFullView ty = Just (af, w, arg, res)
+  | FunTy af w m arg res <- coreFullView ty = Just (af, w, m, arg, res)
   | otherwise                             = Nothing
 
 {-# INLINE splitVisibleFunTy_maybe #-}
@@ -1431,7 +1445,7 @@ splitVisibleFunTy_maybe :: Type -> Maybe (Type, Type)
 -- ^ Works on visible function types only (t1 -> t2), and
 --   returns t1 and t2, but not the multiplicity
 splitVisibleFunTy_maybe ty
-  | FunTy af _ arg res <- coreFullView ty
+  | FunTy af _ _ arg res <- coreFullView ty
   , isVisibleFunArg af = Just (arg, res)
   | otherwise          = Nothing
 
@@ -1439,7 +1453,7 @@ splitFunTys :: Type -> ([Scaled Type], Type)
 splitFunTys ty = split [] ty ty
   where
       -- common case first
-    split args _       (FunTy _ w arg res) = split (Scaled w arg : args) res res
+    split args _       (FunTy _ w m arg res) = split (Scaled w arg : args) res res
     split args orig_ty ty | Just ty' <- coreView ty = split args orig_ty ty'
     split args orig_ty _                   = (reverse args, orig_ty)
 
@@ -1636,8 +1650,8 @@ splitTyConAppNoView_maybe :: HasDebugCallStack => Type -> Maybe (TyCon, [Type])
 -- Same as splitTyConApp_maybe but without looking through synonyms
 splitTyConAppNoView_maybe ty
   = case ty of
-      FunTy { ft_af = af, ft_mult = w, ft_arg = arg, ft_res = res}
-                      -> funTyConAppTy_maybe af w arg res
+      FunTy { ft_af = af, ft_mult = w, ft_arg = arg, ft_res = res, ft_mat = mat}
+                      -> funTyConAppTy_maybe af w mat arg res 
       TyConApp tc tys -> Just (tc, tys)
       _               -> Nothing
 
@@ -1662,10 +1676,10 @@ tcSplitTyConApp_maybe :: HasDebugCallStack => Type -> Maybe (TyCon, [Type])
 -- Defined here to avoid module loops between Unify and TcType.
 tcSplitTyConApp_maybe ty
   = case coreFullView ty of
-      FunTy { ft_af = af, ft_mult = w, ft_arg = arg, ft_res = res}
+      FunTy { ft_af = af, ft_mult = w, ft_arg = arg, ft_res = res, ft_mat = mat}
                       | isVisibleFunArg af    -- Visible args only
                         -- See Note [Decomposing fat arrow c=>t]
-                      -> funTyConAppTy_maybe af w arg res
+                      -> funTyConAppTy_maybe af w mat arg res
       TyConApp tc tys -> Just (tc, tys)
       _               -> Nothing
 
@@ -2018,7 +2032,7 @@ splitForAllCoVar_maybe ty
 splitPiTy_maybe :: Type -> Maybe (PiTyBinder, Type)
 splitPiTy_maybe ty = case coreFullView ty of
   ForAllTy bndr ty -> Just (Named bndr, ty)
-  FunTy { ft_af = af, ft_mult = w, ft_arg = arg, ft_res = res}
+  FunTy { ft_af = af, ft_mult = w, ft_arg = arg, ft_res = res, ft_mat = mat}
                    -> Just (Anon (mkScaled w arg) af, res)
   _                -> Nothing
 
@@ -2034,7 +2048,7 @@ splitPiTys :: Type -> ([PiTyBinder], Type)
 splitPiTys ty = split ty ty []
   where
     split _       (ForAllTy b res) bs = split res res (Named b  : bs)
-    split _       (FunTy { ft_af = af, ft_mult = w, ft_arg = arg, ft_res = res }) bs
+    split _       (FunTy { ft_af = af, ft_mult = w, ft_arg = arg, ft_res = res, ft_mat = mat }) bs
                                       = split res res (Anon (Scaled w arg) af : bs)
     split orig_ty ty bs | Just ty' <- coreView ty = split orig_ty ty' bs
     split orig_ty _                bs = (reverse bs, orig_ty)
@@ -2043,7 +2057,7 @@ collectPiTyBinders :: Type -> [PiTyBinder]
 collectPiTyBinders ty = build $ \c n ->
   let
     split (ForAllTy b res) = Named b `c` split res
-    split (FunTy { ft_af = af, ft_mult = w, ft_arg = arg, ft_res = res })
+    split (FunTy { ft_af = af, ft_mult = w, ft_arg = arg, ft_res = res, ft_mat = mat })
                            = Anon (Scaled w arg) af `c` split res
     split ty | Just ty' <- coreView ty = split ty'
     split _                = n
@@ -2082,7 +2096,7 @@ getRuntimeArgTys = go
     go :: Type -> [(Scaled Type, FunTyFlag)]
     go (ForAllTy _ res)
       = go res
-    go (FunTy { ft_mult = w, ft_arg = arg, ft_res = res, ft_af = af })
+    go (FunTy { ft_mult = w, ft_arg = arg, ft_res = res, ft_af = af, ft_mat = mat })
       = (Scaled w arg, af) : go res
     go ty
       | Just ty' <- coreView ty
@@ -2107,7 +2121,7 @@ splitInvisPiTys ty = split ty ty []
     split _ (ForAllTy b res) bs
       | Bndr _ vis <- b
       , isInvisibleForAllTyFlag vis   = split res res (Named b  : bs)
-    split _ (FunTy { ft_af = af, ft_mult = mult, ft_arg = arg, ft_res = res })  bs
+    split _ (FunTy { ft_af = af, ft_mult = mult, ft_arg = arg, ft_res = res, ft_mat = mat })  bs
       | isInvisibleFunArg af     = split res res (Anon (mkScaled mult arg) af : bs)
     split orig_ty ty bs
       | Just ty' <- coreView ty  = split orig_ty ty' bs
@@ -2125,7 +2139,7 @@ splitInvisPiTysN n ty = split n ty ty []
       | ForAllTy b res <- ty
       , Bndr _ vis <- b
       , isInvisibleForAllTyFlag vis  = split (n-1) res res (Named b  : bs)
-      | FunTy { ft_af = af, ft_mult = mult, ft_arg = arg, ft_res = res } <- ty
+      | FunTy { ft_af = af, ft_mult = mult, ft_arg = arg, ft_res = res, ft_mat = mat } <- ty
       , isInvisibleFunArg af   = split (n-1) res res (Anon (Scaled mult arg) af : bs)
       | otherwise              = (reverse bs, orig_ty)
 
@@ -2203,7 +2217,7 @@ fun_kind_arg_flags = go emptySubst
       = argf : go subst' res_ki arg_tys
       where
         subst' = extendTvSubst subst tv arg_ty
-    go subst (TyVarTy tv) arg_tys
+    go subst (TyVarTy tv _) arg_tys
       | Just ki <- lookupTyVar subst tv = go subst ki arg_tys
     -- This FunTy case is important to handle kinds with nested foralls, such
     -- as this kind (inspired by #16518):
@@ -2226,13 +2240,13 @@ fun_kind_arg_flags = go emptySubst
 -- @isTauTy@ tests if a type has no foralls or (=>)
 isTauTy :: Type -> Bool
 isTauTy ty | Just ty' <- coreView ty = isTauTy ty'
-isTauTy (TyVarTy _)       = True
+isTauTy (TyVarTy _ _)       = True
 isTauTy (LitTy {})        = True
 isTauTy (TyConApp tc tys) = all isTauTy tys && isTauTyCon tc
 isTauTy (AppTy a b)       = isTauTy a && isTauTy b
-isTauTy (FunTy { ft_af = af, ft_mult = w, ft_arg = a, ft_res = b })
+isTauTy (FunTy { ft_af = af, ft_mult = w, ft_arg = a, ft_res = b, ft_mat = m })
  | isInvisibleFunArg af   = False                               -- e.g., Eq a => b
- | otherwise              = isTauTy w && isTauTy a && isTauTy b -- e.g., a -> b
+ | otherwise              = isTauTy m && isTauTy w && isTauTy a && isTauTy b -- e.g., a -> b
 isTauTy (ForAllTy {})     = False
 isTauTy (CastTy ty _)     = isTauTy ty
 isTauTy (CoercionTy _)    = False  -- Not sure about this
@@ -2286,11 +2300,11 @@ coAxNthLHS ax ind =
 
 isFamFreeTy :: Type -> Bool
 isFamFreeTy ty | Just ty' <- coreView ty = isFamFreeTy ty'
-isFamFreeTy (TyVarTy _)       = True
+isFamFreeTy (TyVarTy _ _)       = True
 isFamFreeTy (LitTy {})        = True
 isFamFreeTy (TyConApp tc tys) = all isFamFreeTy tys && isFamFreeTyCon tc
 isFamFreeTy (AppTy a b)       = isFamFreeTy a && isFamFreeTy b
-isFamFreeTy (FunTy _ w a b)   = isFamFreeTy w && isFamFreeTy a && isFamFreeTy b
+isFamFreeTy (FunTy _ w m a b)   = isFamFreeTy m && isFamFreeTy w && isFamFreeTy a && isFamFreeTy b
 isFamFreeTy (ForAllTy _ ty)   = isFamFreeTy ty
 isFamFreeTy (CastTy ty _)     = isFamFreeTy ty
 isFamFreeTy (CoercionTy _)    = False  -- Not sure about this
@@ -2524,7 +2538,7 @@ isValidJoinPointType arity ty
       = tvs `disjointVarSet` tyCoVarsOfType ty
       | Just (t, ty') <- splitForAllTyCoVar_maybe ty
       = valid_under (tvs `extendVarSet` t) (arity-1) ty'
-      | Just (_, _, _, res_ty) <- splitFunTy_maybe ty
+      | Just (_, _, _, _, res_ty) <- splitFunTy_maybe ty
       = valid_under tvs (arity-1) res_ty
       | otherwise
       = False
@@ -2571,9 +2585,9 @@ add this analysis if necessary.  See #14620.
 
 seqType :: Type -> ()
 seqType (LitTy n)                   = n `seq` ()
-seqType (TyVarTy tv)                = tv `seq` ()
+seqType (TyVarTy tv _)                = tv `seq` ()
 seqType (AppTy t1 t2)               = seqType t1 `seq` seqType t2
-seqType (FunTy _ w t1 t2)           = seqType w `seq` seqType t1 `seq` seqType t2
+seqType (FunTy _ w m t1 t2)           = seqType m `seq` seqType w `seq` seqType t1 `seq` seqType t2
 seqType (TyConApp tc tys)           = tc `seq` seqTypes tys
 seqType (ForAllTy (Bndr tv _) ty)   = seqType (varType tv) `seq` seqType ty
 seqType (CastTy ty co)              = seqType ty `seq` seqCo co
@@ -2669,7 +2683,7 @@ typeKind :: HasDebugCallStack => Type -> Kind
 typeKind (TyConApp tc tys)      = piResultTys (tyConKind tc) tys
 typeKind (LitTy l)              = typeLiteralKind l
 typeKind (FunTy { ft_af = af }) = liftedTypeOrConstraintKind (funTyFlagResultTypeOrConstraint af)
-typeKind (TyVarTy tyvar)        = tyVarKind tyvar
+typeKind (TyVarTy tyvar _)        = tyVarKind tyvar
 typeKind (CastTy _ty co)        = coercionRKind co
 typeKind (CoercionTy co)        = coercionType co
 
@@ -2854,11 +2868,11 @@ isConcreteTypeWith :: TyVarSet -> Type -> Bool
 -- the binders are instantiated to concrete types
 isConcreteTypeWith conc_tvs = go
   where
-    go (TyVarTy tv)        = isConcreteTyVar tv || tv `elemVarSet` conc_tvs
+    go (TyVarTy tv _)        = isConcreteTyVar tv || tv `elemVarSet` conc_tvs
     go (AppTy ty1 ty2)     = go ty1 && go ty2
     go (TyConApp tc tys)   = go_tc tc tys
     go ForAllTy{}          = False
-    go (FunTy _ w t1 t2)   =  go w
+    go (FunTy _ w m t1 t2)   =  go w && go m
                            && go (typeKind t1) && go t1
                            && go (typeKind t2) && go t2
     go LitTy{}             = True
@@ -3218,10 +3232,11 @@ isLinearType :: Type -> Bool
 -- this function to check whether it is safe to eta reduce an Id in CorePrep. It
 -- is always safe to return 'True', because 'True' deactivates the optimisation.
 isLinearType ty = case ty of
-                      FunTy _ ManyTy _ res -> isLinearType res
-                      FunTy _ _ _ _        -> True
+                      FunTy _ ManyTy _ _ res -> isLinearType res
+                      FunTy _ _ _ _ _        -> True
                       ForAllTy _ res       -> isLinearType res
                       _ -> False
+
 
 {- *********************************************************************
 *                                                                      *

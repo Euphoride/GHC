@@ -2,7 +2,7 @@
              MultiParamTypeClasses, RoleAnnotations, CPP, TypeOperators,
              PolyKinds, NegativeLiterals, DataKinds, ScopedTypeVariables,
              TypeApplications, StandaloneKindSignatures, GADTs,
-             FlexibleInstances, UndecidableInstances, UnboxedSums #-}
+             FlexibleInstances, UndecidableInstances, UnboxedSums, RankNTypes #-}
 -- NegativeLiterals: see Note [Fixity of (->)]
 {-# OPTIONS_HADDOCK print-explicit-runtime-reps #-}
 -----------------------------------------------------------------------------
@@ -60,6 +60,8 @@ module GHC.Internal.Types (
 
         -- * Multiplicity types
         Multiplicity(..), MultMul,
+
+        Matchability(..),
 
         -- * Runtime type representation
         Module(..), TrName(..), TyCon(..), TypeLitSort(..),
@@ -224,7 +226,7 @@ This declaration is important for :info (->) command (issue #10145)
 -}
 
 -- | The regular function type
-type (->) = FUN 'Many
+type (->) = FUN 'Many 'M
 -- See Note [Linear types] in Multiplicity
 
 {- *********************************************************************
@@ -261,6 +263,8 @@ type ZeroBitType = TYPE ZeroBitRep
 
 -------------------------
 data Multiplicity = Many | One
+
+data Matchability = M | U
 
 type family MultMul (a :: Multiplicity) (b :: Multiplicity) :: Multiplicity where
   MultMul 'One x = x
@@ -655,8 +659,9 @@ class Coercible (a :: k) (b :: k)
 -- | Class for matchable type constructors. This allows the constraint solver
 -- to decompose types like @f a ~ f b@ into @a ~ b@ when @f@ is known to be matchable.
 -- A type constructor is matchable if it is injective and geneerative.
-type Matchable :: (k -> Type) -> Constraint
-class Matchable f where
+class Matchable (f :: k)
+
+class Unmatchable (f :: k)
 {- *********************************************************************
 *                                                                      *
                    Bool, and isTrue#

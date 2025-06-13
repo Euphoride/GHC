@@ -64,6 +64,17 @@ manyDataConTyCon :: TyCon
 unrestrictedFunTyCon :: TyCon
 multMulTyCon :: TyCon
 
+matchabilityTyCon :: TyCon
+matchabilityTy :: Type
+matchableDataConTy :: Type
+matchableDataConTyCon :: TyCon
+unmatchableDataConTy :: Type
+unmatchableDataConTyCon :: TyCon
+
+matchableDataConName :: Name
+unmatchableDataConName :: Name
+matchabilityTyConName :: Name
+
 tupleTyConName :: TupleSort -> Arity -> Name
 tupleDataConName :: Boxity -> Arity -> Name
 

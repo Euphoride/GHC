@@ -152,8 +152,8 @@ recoverFullIfaceTypes sDocContext flattened ast = fmap (printed A.!) ast
     go (HForAllTy ((n, k), af) t) =
       let b = (mkIfLclName $ getOccFS n, k)
        in IfaceForAllTy (Bndr (IfaceTvBndr b) af) t
-    go (HFunTy w a b) = IfaceFunTy (visArg TypeLike) w a b -- t1 -> t2
-    go (HQualTy con b) = IfaceFunTy (invisArg TypeLike) many_ty con b -- c => t
+    go (HFunTy w m a b) = IfaceFunTy (visArg TypeLike) w m a b -- t1 -> t2
+    go (HQualTy m con b) = IfaceFunTy (invisArg TypeLike) many_ty m con b -- c => t
     go (HCastTy a) = a
     go HCoercionTy = IfaceTyVar $ mkIfLclName "<coercion type>"
     go (HTyConApp a xs) = IfaceTyConApp a (hieToIfaceArgs xs)

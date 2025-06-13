@@ -593,6 +593,8 @@ reportWanteds ctxt tc_lvl wc@(WC { wc_simple = simples, wc_impl = implics
             -> (es1, es2, err : es3, es4)
           DE_Multiplicity mult_co loc
             -> (es1, es2, es3, (mult_co, loc):es4)
+          DE_Mat mat_co loc
+            -> (es1, es2, es3, (mat_co, loc):es4)
 
       -- See Note [Suppressing confusing errors]
     suppress :: ErrorItem -> Bool
