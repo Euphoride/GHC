@@ -48,10 +48,11 @@ module GHC.Core.TyCo.Rep (
         mkVisFunTy, mkScaledFunTys,
         mkInvisFunTy, mkInvisFunTys,
         tcMkVisFunTy, tcMkInvisFunTy, tcMkScaledFunTy, tcMkScaledFunTys,
+        mkMatchableInvisFunTy, mkMatchableInvisFunTys,
         mkForAllTy, mkForAllTys, mkInvisForAllTys,
         mkPiTy, mkPiTys,
         mkVisFunTyMany, mkVisFunTysMany,
-        nonDetCmpTyLit, cmpTyLit,
+        nonDetCmpTyLit, cmpTyLit, defaultMatchability,
 
         -- * Functions over coercions
         pickLR,
@@ -63,7 +64,11 @@ module GHC.Core.TyCo.Rep (
         typeSize, typesSize, coercionSize,
 
         -- * Multiplicities
-        Scaled(..), scaledMult, scaledThing, mapScaledType, Mult
+        Scaled(..), scaledMult, scaledThing, mapScaledType, Mult,
+
+        Mat, templateMatchabilityVar,
+
+        Matchability(..), tyVarMatchability, mkMatchableVisFunTysMany
     ) where
 
 import GHC.Prelude
@@ -83,6 +88,7 @@ import GHC.Core.Coercion.Axiom
 
 -- others
 import GHC.Builtin.Names
+import GHC.Builtin.Uniques (mkBuiltinUnique)
 
 import GHC.Types.Basic ( LeftOrRight(..), pickLR )
 import GHC.Utils.Outputable
@@ -95,6 +101,9 @@ import GHC.Utils.Binary
 import qualified Data.Data as Data hiding ( TyCon )
 import Data.IORef ( IORef )   -- for CoercionHole
 import Control.DeepSeq
+
+import GHC.Types.Name (mkSystemName)
+import GHC.Types.Name.Occurrence (mkTyVarOcc)
 
 {- **********************************************************************
 *                                                                       *
@@ -119,11 +128,14 @@ type LevityType = Type
 -- of Note [Fixed RuntimeRep] in GHC.Tc.Utils.Concrete.
 type FRRType = Type
 
+data Matchability = Matchable | MaybeUnmatchable
+  deriving (Data.Data)
+
 -- If you edit this type, you may need to update the GHC formalism
 -- See Note [GHC Formalism] in GHC.Core.Lint
 data Type
   -- See Note [Non-trivial definitional equality]
-  = TyVarTy Var -- ^ Vanilla type or kind variable (*never* a coercion variable)
+  = TyVarTy Var Matchability -- ^ Vanilla type or kind variable (*never* a coercion variable)
 
   | AppTy
         Type
@@ -163,7 +175,7 @@ data Type
            --            See Note [Unused coercion variable in ForAllTy]
            -- See Note [Why ForAllTy can quantify over a coercion variable]
 
-  | FunTy      -- ^ FUN m t1 t2   Very common, so an important special case
+  | FunTy      -- ^ FUN m m' t1 t2   Very common, so an important special case
                 -- See Note [Function types]
      { ft_af   :: FunTyFlag    -- Is this (->/FUN) or (=>) or (==>)?
                                  -- This info is fully specified by the kinds in
@@ -171,6 +183,7 @@ data Type
                                  -- Note [FunTyFlag] in GHC.Types.Var
 
      , ft_mult :: Mult           -- Multiplicity; always Many for (=>) and (==>)
+     , ft_mat  :: Mat          -- Matchability!
      , ft_arg  :: Type           -- Argument type
      , ft_res  :: Type }         -- Result type
 
@@ -698,9 +711,15 @@ These functions are here so that they can be used by GHC.Builtin.Types.Prim,
 which in turn is imported by Type
 -}
 
-mkTyVarTy  :: TyVar   -> Type
+templateMatchabilityVar :: TyVar
+templateMatchabilityVar = mkTyVar (mkSystemName (mkBuiltinUnique 999) (mkTyVarOcc "n")) matchabilityTy
+
+tyVarMatchability :: Type -> Matchability
+tyVarMatchability (TyVarTy _ m) = m
+
+mkTyVarTy  :: TyVar -> Type
 mkTyVarTy v = assertPpr (isTyVar v) (ppr v <+> dcolon <+> ppr (tyVarKind v)) $
-              TyVarTy v
+              TyVarTy v Matchable
 
 mkTyVarTys :: [TyVar] -> [Type]
 mkTyVarTys = map mkTyVarTy -- a common use of mkTyVarTy
@@ -708,7 +727,7 @@ mkTyVarTys = map mkTyVarTy -- a common use of mkTyVarTy
 mkTyCoVarTy :: TyCoVar -> Type
 mkTyCoVarTy v
   | isTyVar v
-  = TyVarTy v
+  = TyVarTy v Matchable
   | otherwise
   = CoercionTy (CoVarCo v)
 
@@ -717,15 +736,22 @@ mkTyCoVarTys = map mkTyCoVarTy
 
 infixr 3 `mkFunTy`, `mkInvisFunTy`, `mkVisFunTyMany`
 
+
+defaultMatchability :: FunTyFlag -> Type
+defaultMatchability FTF_C_C = matchableDataConTy
+defaultMatchability FTF_C_T = matchableDataConTy
+defaultMatchability _ = matchableDataConTy
+
 mkNakedFunTy :: FunTyFlag -> Kind -> Kind -> Kind
 -- See Note [Naked FunTy] in GHC.Builtin.Types
 -- Always Many multiplicity; kinds have no linearity
 mkNakedFunTy af arg res
  =  FunTy { ft_af   = af, ft_mult = manyDataConTy
-          , ft_arg  = arg, ft_res  = res }
+          , ft_arg  = arg, ft_res  = res, ft_mat = defaultMatchability af }
 
-mkFunTy :: HasDebugCallStack => FunTyFlag -> Mult -> Type -> Type -> Type
-mkFunTy af mult arg res
+
+mkFunTy :: HasDebugCallStack => FunTyFlag -> Mult -> Mat -> Type -> Type -> Type
+mkFunTy af mult mat arg res
   = assertPpr (af == chooseFunTyFlag arg res) (vcat
       [ text "af" <+> ppr af
       , text "chooseAAF" <+> ppr (chooseFunTyFlag arg res)
@@ -734,19 +760,30 @@ mkFunTy af mult arg res
     FunTy { ft_af   = af
           , ft_mult = mult
           , ft_arg  = arg
-          , ft_res  = res }
+          , ft_res  = res
+          , ft_mat = mat  }
 
 mkInvisFunTy :: HasDebugCallStack => Type -> Type -> Type
 mkInvisFunTy arg res
-  = mkFunTy (invisArg (typeTypeOrConstraint res)) manyDataConTy arg res
+  = mkFunTy (invisArg (typeTypeOrConstraint res)) manyDataConTy (defaultMatchability (invisArg (typeTypeOrConstraint res))) arg res
 
 mkInvisFunTys :: HasDebugCallStack => [Type] -> Type -> Type
 mkInvisFunTys args res
-  = foldr (mkFunTy af manyDataConTy) res args
+  = foldr (mkFunTy af manyDataConTy (defaultMatchability af)) res args
   where
     af = invisArg (typeTypeOrConstraint res)
 
-mkVisFunTy :: HasDebugCallStack => Mult -> Type -> Type -> Type
+mkMatchableInvisFunTy ::  HasDebugCallStack => Type -> Type -> Type
+mkMatchableInvisFunTy arg res = mkFunTy (invisArg (typeTypeOrConstraint res)) manyDataConTy matchableDataConTy arg res
+
+mkMatchableInvisFunTys :: HasDebugCallStack => [Type] -> Type -> Type
+mkMatchableInvisFunTys args res
+  = foldr (mkFunTy af manyDataConTy matchableDataConTy) res args
+  where
+    af = invisArg (typeTypeOrConstraint res)
+
+
+mkVisFunTy :: HasDebugCallStack => Mult -> Mat -> Type -> Type -> Type
 -- Always TypeLike, user-specified multiplicity.
 mkVisFunTy = mkFunTy visArgTypeLike
 
@@ -754,15 +791,21 @@ mkVisFunTy = mkFunTy visArgTypeLike
 -- | Special, common, case: Arrow type with mult Many
 mkVisFunTyMany :: HasDebugCallStack => Type -> Type -> Type
 -- Always TypeLike, multiplicity Many
-mkVisFunTyMany = mkVisFunTy manyDataConTy
+mkVisFunTyMany = mkVisFunTy manyDataConTy (defaultMatchability visArgTypeLike)
 
 mkVisFunTysMany :: [Type] -> Type -> Type
 -- Always TypeLike, multiplicity Many
 mkVisFunTysMany tys ty = foldr mkVisFunTyMany ty tys
 
+mkMatchableVisFunTyMany :: HasDebugCallStack => Type -> Type -> Type
+mkMatchableVisFunTyMany = mkVisFunTy manyDataConTy matchableDataConTy
+
+mkMatchableVisFunTysMany :: [Type] -> Type -> Type
+mkMatchableVisFunTysMany tys ty = foldr mkMatchableVisFunTyMany ty tys
+
 ---------------
 mkScaledFunTy :: HasDebugCallStack => FunTyFlag -> Scaled Type -> Type -> Type
-mkScaledFunTy af (Scaled mult arg) res = mkFunTy af mult arg res
+mkScaledFunTy af (Scaled mult arg) res = mkFunTy af mult (defaultMatchability af) arg res
 
 mkScaledFunTys :: HasDebugCallStack => [Scaled Type] -> Type -> Type
 -- All visible args
@@ -817,7 +860,8 @@ tcMkVisFunTy :: Mult -> Type -> Type -> Type
 -- to avoid looking at the result kind, which may not be zonked
 tcMkVisFunTy mult arg res
   = FunTy { ft_af = visArgTypeLike, ft_mult = mult
-          , ft_arg = arg, ft_res = res }
+          , ft_arg = arg, ft_res = res, ft_mat = defaultMatchability visArgTypeLike }
+
 
 tcMkInvisFunTy :: TypeOrConstraint -> Type -> Type -> Type
 -- Always invisible (constraint) argument, result specified by res_torc
@@ -825,7 +869,8 @@ tcMkInvisFunTy :: TypeOrConstraint -> Type -> Type -> Type
 -- to avoid looking at the result kind, which may not be zonked
 tcMkInvisFunTy res_torc arg res
   = FunTy { ft_af = invisArg res_torc, ft_mult = manyDataConTy
-          , ft_arg = arg, ft_res = res }
+          , ft_arg = arg, ft_res = res, ft_mat = defaultMatchability (invisArg res_torc) }
+
 
 tcMkScaledFunTys :: [Scaled Type] -> Type -> Type
 -- All visible args
@@ -901,6 +946,7 @@ data Coercion
         , fco_afl          :: FunTyFlag   -- Arrow for coercionLKind
         , fco_afr          :: FunTyFlag   -- Arrow for coercionRKind
         , fco_mult         :: CoercionN
+        , fco_mat          :: CoercionN
         , fco_arg, fco_res :: Coercion }
        -- (if the role "e" is Phantom, the first coercion is, too)
        -- the first coercion is for the multiplicity
@@ -968,6 +1014,7 @@ data FunSel  -- See Note [SelCo]
   = SelMult  -- Multiplicity
   | SelArg   -- Argument of function
   | SelRes   -- Result of function
+  | SelMat
   deriving( Eq, Data.Data, Ord )
 
 type CoercionN = Coercion       -- always nominal
@@ -993,11 +1040,13 @@ instance Outputable FunSel where
   ppr SelMult = text "mult"
   ppr SelArg  = text "arg"
   ppr SelRes  = text "res"
+  ppr SelMat  = text "mat"
 
 instance NFData FunSel where
   rnf SelMult = ()
   rnf SelArg  = ()
   rnf SelRes  = ()
+  rnf SelMat  = ()
 
 instance Binary CoSel where
    put_ bh (SelTyCon n r)   = do { putByte bh 0; put_ bh n; put_ bh r }
@@ -1005,6 +1054,7 @@ instance Binary CoSel where
    put_ bh (SelFun SelMult) = putByte bh 2
    put_ bh (SelFun SelArg)  = putByte bh 3
    put_ bh (SelFun SelRes)  = putByte bh 4
+   put_ bh (SelFun SelMat)  = putByte bh 5
 
    get bh = do { h <- getByte bh
                ; case h of
@@ -1012,7 +1062,8 @@ instance Binary CoSel where
                    1 -> return SelForAll
                    2 -> return (SelFun SelMult)
                    3 -> return (SelFun SelArg)
-                   _ -> return (SelFun SelRes) }
+                   4 -> return (SelFun SelRes)
+                   _ -> return (SelFun SelMat) }
 
 instance NFData CoSel where
   rnf (SelTyCon n r) = rnf n `seq` rnf r `seq` ()
@@ -1937,12 +1988,12 @@ foldTyCo (TyCoFolder { tcf_view       = view
   = (go_ty env, go_tys env, go_co env, go_cos env)
   where
     go_ty env ty | Just ty' <- view ty = go_ty env ty'
-    go_ty env (TyVarTy tv)      = tyvar env tv
+    go_ty env (TyVarTy tv _)      = tyvar env tv
     go_ty env (AppTy t1 t2)     = go_ty env t1 `mappend` go_ty env t2
     go_ty _   (LitTy {})        = mempty
     go_ty env (CastTy ty co)    = go_ty env ty `mappend` go_co env co
     go_ty env (CoercionTy co)   = go_co env co
-    go_ty env (FunTy _ w arg res) = go_ty env w `mappend` go_ty env arg `mappend` go_ty env res
+    go_ty env (FunTy _ w m arg res) = go_ty env m `mappend` go_ty env w `mappend` go_ty env arg `mappend` go_ty env res
     go_ty env (TyConApp _ tys)  = go_tys env tys
     go_ty env (ForAllTy (Bndr tv vis) inner)
       = let !env' = tycobinder env tv vis  -- Avoid building a thunk here
@@ -2013,7 +2064,7 @@ typeSize :: Type -> Int
 typeSize (LitTy {})                 = 1
 typeSize (TyVarTy {})               = 1
 typeSize (AppTy t1 t2)              = typeSize t1 + typeSize t2
-typeSize (FunTy _ _ t1 t2)          = typeSize t1 + typeSize t2
+typeSize (FunTy _ _ _ t1 t2)          = typeSize t1 + typeSize t2
 typeSize (ForAllTy (Bndr tv _) t)   = typeSize (varType tv) + typeSize t
 typeSize (TyConApp _ ts)            = 1 + typesSize ts
 typeSize (CastTy ty co)             = typeSize ty + coercionSize co
@@ -2030,8 +2081,8 @@ coercionSize (TyConAppCo _ _ args) = 1 + sum (map coercionSize args)
 coercionSize (AppCo co arg)        = coercionSize co + coercionSize arg
 coercionSize (ForAllCo { fco_kind = h, fco_body = co })
                                    = 1 + coercionSize co + coercionSize h
-coercionSize (FunCo _ _ _ w c1 c2) = 1 + coercionSize c1 + coercionSize c2
-                                                         + coercionSize w
+coercionSize (FunCo _ _ _ w m c1 c2) = 1 + coercionSize c1 + coercionSize c2
+                                                         + coercionSize w + coercionSize m
 coercionSize (CoVarCo _)         = 1
 coercionSize (HoleCo _)          = 1
 coercionSize (AxiomCo _ cs)      = 1 + sum (map coercionSize cs)
@@ -2099,3 +2150,7 @@ So that Mult feels a bit more structured, we provide pattern synonyms and smart
 constructors for these.
 -}
 type Mult = Type
+
+
+-- | Mat is also a synoynm for type.
+type Mat = Type

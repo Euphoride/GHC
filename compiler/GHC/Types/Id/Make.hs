@@ -40,6 +40,7 @@ module GHC.Types.Id.Make (
         pcRepPolyId,
 
         mkRepPolyIdConcreteTyVars,
+        matchableDictName, matchableDictKey,matchableDictId,
     ) where
 
 import GHC.Prelude
@@ -94,6 +95,11 @@ import Data.List        ( zipWith4 )
 -- A bit of a shame we must import these here
 import GHC.StgToCmm.Types (LambdaFormInfo(..))
 import GHC.Runtime.Heap.Layout (ArgDescr(ArgUnknown))
+
+import GHC.Builtin.Names (gHC_INTERNAL_MATCHABLE)
+import GHC.Builtin.Types (anyTypeOfKind, constraintKind, unboxedUnitTy)
+import GHC.Builtin.Uniques (mkPreludeMiscIdUnique)
+import GHC.Types.Id.Info (noCafIdInfo)
 
 {-
 ************************************************************************
@@ -187,6 +193,7 @@ ghcPrimIds
     , proxyHashId
     , leftSectionId
     , rightSectionId
+    , matchableDictId
     ]
 
 {-
@@ -472,7 +479,12 @@ Therefore there is no loss of generality if we make all selectors unrestricted.
 
 -}
 
-mkDictSelId :: Name          -- Name of one of the *value* selectors
+
+-- ! FLAG -> Fascinating how "value selector" as a term occurs only once in the
+-- code base, here, with no definition. Splendid work folks.
+
+
+mkDictSelId :: Name          -- Name of one of the *value* selectors 
                              -- (dictionary superclass or method)
             -> Class -> Id
 mkDictSelId name clas
@@ -1980,7 +1992,7 @@ noinlineConstraintId = pcMiscPrelId noinlineConstraintIdName ty info
   where
     info = noCafIdInfo
     ty   = mkSpecForAllTys [alphaConstraintTyVar] $
-           mkFunTy visArgConstraintLike ManyTy alphaTy alphaConstraintTy
+           mkFunTy visArgConstraintLike ManyTy matchableDataConTy alphaTy alphaConstraintTy
 
 ------------------------------------------------
 nospecId :: Id -- See Note [nospecId magic]
@@ -2043,9 +2055,10 @@ leftSectionId = pcRepPolyId leftSectionName ty concs info
     ty  = mkInfForAllTys  [runtimeRep1TyVar,runtimeRep2TyVar, multiplicityTyVar1] $
           mkSpecForAllTys [openAlphaTyVar,  openBetaTyVar]    $
           exprType body
-    [f,x] = mkTemplateLocals [mkVisFunTy mult openAlphaTy openBetaTy, openAlphaTy]
+    [f,x] = mkTemplateLocals [mkVisFunTy mult (matchableDataConTy) openAlphaTy openBetaTy, openAlphaTy]
 
     mult = mkTyVarTy multiplicityTyVar1 :: Mult
+    -- mat = (mkTyVarTy templateMatchabilityVar) :: Mat
     xmult = setIdMult x mult
 
     rhs  = mkLams [ runtimeRep1TyVar, runtimeRep2TyVar, multiplicityTyVar1
@@ -2499,3 +2512,16 @@ mkRepPolyIdConcreteTyVars vars nm =
     mk_conc_frr ty pos =
       ConcreteFRR $ FixedRuntimeRepOrigin ty
                   $ FRRRepPolyId nm RepPolyFunction pos
+
+
+matchableDictName :: Name
+matchableDictName = mkWiredInIdName gHC_INTERNAL_TUPLE (fsLit "trivialMatchableDict") matchableDictKey matchableDictId
+
+matchableDictKey :: Unique
+matchableDictKey = mkPreludeMiscIdUnique 999
+
+matchableDictId :: Id
+matchableDictId = mkVanillaGlobalWithInfo matchableDictName ty (vanillaIdInfo `setCafInfo` MayHaveCafRefs)
+  where
+    ty = unitTy
+

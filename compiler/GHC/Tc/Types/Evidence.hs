@@ -87,6 +87,8 @@ import GHC.Core.Multiplicity
 
 import qualified Data.Semigroup as S
 
+import GHC.Builtin.Types (matchabilityTy, matchableDataConTy)
+
 {-
 Note [TcCoercions]
 ~~~~~~~~~~~~~~~~~~
@@ -227,7 +229,9 @@ mkWpEta xs wrap = foldr eta_one wrap xs
 
 mk_wp_fun_co :: Mult -> TcCoercionR -> TcCoercionR -> TcCoercionR
 mk_wp_fun_co mult arg_co res_co
-  = mkNakedFunCo Representational FTF_T_T (multToCo mult) arg_co res_co
+  = mkNakedFunCo Representational FTF_T_T (multToCo mult) (mat_co) arg_co res_co
+  where
+    mat_co = mkReflCo Nominal matchableDataConTy
     -- FTF_T_T: WpFun is always (->)
 
 mkWpCastR :: TcCoercionR -> HsWrapper
@@ -1036,13 +1040,13 @@ wrapIP ty = mkSymCo (unwrapIP ty)
 -- The EvVar is evidence for `Quote m`
 -- The Type is a metavariable for `m`
 --
-data QuoteWrapper = QuoteWrapper EvVar Type deriving Data.Data
+data QuoteWrapper = QuoteWrapper EvVar EvVar Type deriving Data.Data
 
 quoteWrapperTyVarTy :: QuoteWrapper -> Type
-quoteWrapperTyVarTy (QuoteWrapper _ t) = t
+quoteWrapperTyVarTy (QuoteWrapper _ _ t) = t
 
 -- | Convert the QuoteWrapper into a normal HsWrapper which can be used to
 -- apply its contents.
 applyQuoteWrapper :: QuoteWrapper -> HsWrapper
-applyQuoteWrapper (QuoteWrapper ev_var m_var)
-  = mkWpEvVarApps [ev_var] <.> mkWpTyApps [m_var]
+applyQuoteWrapper (QuoteWrapper ev_var match_ev m_var) 
+  = mkWpEvVarApps [ev_var] <.> mkWpEvVarApps [match_ev] <.> mkWpTyApps [m_var]

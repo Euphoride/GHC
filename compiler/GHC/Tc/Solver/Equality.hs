@@ -23,11 +23,13 @@ import GHC.Tc.Utils.Unify
 import GHC.Tc.Utils.TcType
 import GHC.Tc.Instance.Family ( tcTopNormaliseNewTypeTF_maybe )
 import GHC.Tc.Instance.FunDeps( FunDepEqn(..) )
+import GHC.Tc.Instance.Class ( isMatchableTyCon )
 import qualified GHC.Tc.Utils.Monad    as TcM
 
 import GHC.Core.Type
 import GHC.Core.Predicate
 import GHC.Core.Class
+import GHC.Core.Class ( classKey )
 import GHC.Core.DataCon ( dataConName )
 import GHC.Core.TyCon
 import GHC.Core.TyCo.Rep   -- cleverly decomposes types, good for completeness checking
@@ -37,15 +39,20 @@ import GHC.Core.Reduction
 import GHC.Core.Unify( tcUnifyTyForInjectivity )
 import GHC.Core.FamInstEnv ( FamInstEnvs, FamInst(..), apartnessCheck
                            , lookupFamInstEnvByTyCon )
+import GHC.Core.InstEnv ( InstEnvs(..), lookupInstEnv, ClsInst(..), instEnvElts  )
+
 import GHC.Core
 
 import GHC.Types.Var
 import GHC.Types.Var.Env
 import GHC.Types.Var.Set( anyVarSet )
+import GHC.Types.Name ( nameOccName )
+import GHC.Types.Name.Occurrence ( mkOccName, tcClsName )
 import GHC.Types.Name.Reader
 import GHC.Types.Basic
 
 import GHC.Builtin.Types.Literals ( tryInteractTopFam, tryInteractInertFam )
+import GHC.Builtin.Names ( matchableClassName )
 
 import GHC.Utils.Outputable
 import GHC.Utils.Panic
@@ -55,8 +62,9 @@ import GHC.Utils.Monad
 import GHC.Data.Pair
 import GHC.Data.Bag
 import Control.Monad
-import Data.Maybe ( isJust, isNothing )
-import Data.List  ( zip4 )
+import Data.Maybe ( isJust, isNothing, fromMaybe )
+import Data.List  ( zip4, nubBy, intersperse )
+import Data.Function ( on )
 
 import qualified Data.Semigroup as S
 import Data.Bifunctor ( bimap )
@@ -160,9 +168,9 @@ zonkEqTypes ev eq_rel ty1 ty2
                     Right ty  -> canEqReflexive ev eq_rel ty }
   where
     go :: TcType -> TcType -> TcS (Either (Pair TcType) TcType)
-    go (TyVarTy tv1) (TyVarTy tv2) = tyvar_tyvar tv1 tv2
-    go (TyVarTy tv1) ty2           = tyvar NotSwapped tv1 ty2
-    go ty1 (TyVarTy tv2)           = tyvar IsSwapped  tv2 ty1
+    go (TyVarTy tv1 m) (TyVarTy tv2 m') = tyvar_tyvar tv1 tv2 m m'
+    go (TyVarTy tv1 m) ty2           = tyvar NotSwapped tv1 ty2 m
+    go ty1 (TyVarTy tv2 m)           = tyvar IsSwapped  tv2 ty1 m
 
     -- We handle FunTys explicitly here despite the fact that they could also be
     -- treated as an application. Why? Well, for one it's cheaper to just look
@@ -171,12 +179,13 @@ zonkEqTypes ev eq_rel ty1 ty2
     -- so we may run into an unzonked type variable while trying to compute the
     -- RuntimeReps of the argument and result types. This can be observed in
     -- testcase tc269.
-    go (FunTy af1 w1 arg1 res1) (FunTy af2 w2 arg2 res2)
+    go (FunTy af1 w1 m1 arg1 res1) (FunTy af2 w2 m2 arg2 res2)
       | af1 == af2
       , eqType w1 w2
-      = do { res_a <- go arg1 arg2
+      = do { -- res_m <- go m1 m2
+           ; res_a <- go arg1 arg2
            ; res_b <- go res1 res2
-           ; return $ combine_rev (FunTy af1 w1) res_b res_a }
+           ; return $ combine_rev (FunTy af1 w1 m1) res_b res_a }
 
     go ty1@(FunTy {}) ty2 = bale_out ty1 ty2
     go ty1 ty2@(FunTy {}) = bale_out ty1 ty2
@@ -211,11 +220,11 @@ zonkEqTypes ev eq_rel ty1 ty2
     bale_out ty1 ty2 = return $ Left (Pair ty1 ty2)
 
     tyvar :: SwapFlag -> TcTyVar -> TcType
-          -> TcS (Either (Pair TcType) TcType)
+          -> Matchability -> TcS (Either (Pair TcType) TcType)
       -- Try to do as little as possible, as anything we do here is redundant
       -- with rewriting. In particular, no need to zonk kinds. That's why
       -- we don't use the already-defined zonking functions
-    tyvar swapped tv ty
+    tyvar swapped tv ty m
       = case tcTyVarDetails tv of
           MetaTv { mtv_ref = ref }
             -> do { cts <- readTcRef ref
@@ -227,26 +236,26 @@ zonkEqTypes ev eq_rel ty1 ty2
       where
         give_up = return $ Left $ unSwap swapped Pair (mkTyVarTy tv) ty
 
-    tyvar_tyvar tv1 tv2
+    tyvar_tyvar tv1 tv2 m1 m2
       | tv1 == tv2 = return (Right (mkTyVarTy tv1))
-      | otherwise  = do { (ty1', progress1) <- quick_zonk tv1
-                        ; (ty2', progress2) <- quick_zonk tv2
+      | otherwise  = do { (ty1', progress1) <- quick_zonk tv1 m1
+                        ; (ty2', progress2) <- quick_zonk tv2 m2
                         ; if progress1 || progress2
                           then go ty1' ty2'
-                          else return $ Left (Pair (TyVarTy tv1) (TyVarTy tv2)) }
+                          else return $ Left (Pair (TyVarTy tv1 m1) (TyVarTy tv2 m2)) }
 
     trace_indirect tv ty
        = traceTcS "Following filled tyvar (zonk_eq_types)"
                   (ppr tv <+> equals <+> ppr ty)
 
-    quick_zonk tv = case tcTyVarDetails tv of
+    quick_zonk tv m = case tcTyVarDetails tv of
       MetaTv { mtv_ref = ref }
         -> do { cts <- readTcRef ref
               ; case cts of
-                  Flexi        -> return (TyVarTy tv, False)
+                  Flexi        -> return (TyVarTy tv m, False)
                   Indirect ty' -> do { trace_indirect tv ty'
                                      ; return (ty', True) } }
-      _ -> return (TyVarTy tv, False)
+      _ -> return (TyVarTy tv m, False)
 
       -- This happens for type families, too. But recall that failure
       -- here just means to try harder, so it's OK if the type function
@@ -264,7 +273,6 @@ zonkEqTypes ev eq_rel ty1 ty2
     combine_results = bimap (fmap reverse) reverse .
                       foldl' (combine_rev (:)) (Right [])
 
-      -- combine (in reverse) a new result onto an already-combined result
     combine_rev :: (a -> b -> c)
                 -> Either (Pair b) b
                 -> Either (Pair a) a
@@ -274,12 +282,48 @@ zonkEqTypes ev eq_rel ty1 ty2
     combine_rev f (Right tys) (Left elt) = Left (f <$> elt     <*> pure tys)
     combine_rev f (Right tys) (Right ty) = Right (f ty tys)
 
+    combine_rev3 :: (a -> b -> c -> d)
+                -> Either (Pair c) c
+                -> Either (Pair b) b
+                -> Either (Pair a) a
+                -> Either (Pair d) d
+    combine_rev3 f (Left list_c) (Left list_b) (Left list_a) = 
+        Left (f <$> list_a <*> list_b <*> list_c)
+    combine_rev3 f (Left list_c) (Left list_b) (Right val_a) = 
+        Left (f <$> pure val_a <*> list_b <*> list_c)
+    combine_rev3 f (Left list_c) (Right val_b) (Left list_a) = 
+        Left (f <$> list_a <*> pure val_b <*> list_c)
+    combine_rev3 f (Left list_c) (Right val_b) (Right val_a) = 
+        Left (f <$> pure val_a <*> pure val_b <*> list_c)
+    combine_rev3 f (Right val_c) (Left list_b) (Left list_a) = 
+        Left (f <$> list_a <*> list_b <*> pure val_c)
+    combine_rev3 f (Right val_c) (Left list_b) (Right val_a) = 
+        Left (f <$> pure val_a <*> list_b <*> pure val_c)
+    combine_rev3 f (Right val_c) (Right val_b) (Left list_a) = 
+        Left (f <$> list_a <*> pure val_b <*> pure val_c)
+    combine_rev3 f (Right val_c) (Right val_b) (Right val_a) = 
+        Right (f val_a val_b val_c)
+
 
 {- *********************************************************************
 *                                                                      *
 *           canonicaliseEquality
 *                                                                      *
 ********************************************************************* -}
+
+-- !FLAG -> Remove instenv stuff because we don't need it anymore
+-- !FLAG -> Also can we find a better way to implement the below?
+-- | Emit a Matchable constraint for an abstract TyCon
+emitMatchableConstraint :: Class -> CtEvidence -> Type -> TcS ()
+emitMatchableConstraint matchable_class ev ty
+  | isWanted ev 
+  = do { let loc = ctEvLoc ev
+             pred = mkClassPred matchable_class [typeKind ty, ty]
+       ; new_ev <- newWantedNC loc emptyRewriterSet pred
+       ; traceTcS "Predicate emitted for matchability: " (ppr pred <+> ppr ty)
+       ; emitWorkNC [CtWanted (new_ev)] }
+  | otherwise = return ()
+  
 
 canonicaliseEquality
    :: CtEvidence -> EqRel
@@ -295,12 +339,14 @@ canonicaliseEquality ev eq_rel ty1 ty2
                  vcat [ ppr ev, ppr eq_rel, ppr ty1, ppr ty2 ]
                ; rdr_env   <- getGlobalRdrEnvTcS
                ; fam_insts <- getFamInstEnvs
-               ; can_eq_nc False rdr_env fam_insts ev eq_rel ty1 ty1 ty2 ty2 }
+               ; cls_insts <- getInstEnvs         -- ! FLAG as class inst thingies -> nuke me
+               ; can_eq_nc False rdr_env fam_insts cls_insts ev eq_rel ty1 ty1 ty2 ty2 }
 
 can_eq_nc
    :: Bool           -- True => both input types are rewritten
    -> GlobalRdrEnv   -- needed to see which newtypes are in scope
    -> FamInstEnvs    -- needed to unwrap data instances
+   -> InstEnvs       -- needed to figure out matchability and all that jazz
    -> CtEvidence
    -> EqRel
    -> Type -> Type    -- LHS, after and before type-synonym expansion, resp
@@ -308,106 +354,127 @@ can_eq_nc
    -> TcS (StopOrContinue (Either IrredCt EqCt))
 
 -- See Note [Unifying type synonyms] in GHC.Core.Unify
-can_eq_nc _flat _rdr_env _envs ev eq_rel ty1@(TyConApp tc1 []) _ps_ty1 (TyConApp tc2 []) _ps_ty2
+can_eq_nc _flat _rdr_env _envs _ienvs ev eq_rel ty1@(TyConApp tc1 []) _ps_ty1 (TyConApp tc2 []) _ps_ty2
   | tc1 == tc2
   = canEqReflexive ev eq_rel ty1
 
 -- Expand synonyms first; see Note [Type synonyms and canonicalization]
-can_eq_nc rewritten rdr_env envs ev eq_rel ty1 ps_ty1 ty2 ps_ty2
-  | Just ty1' <- coreView ty1 = can_eq_nc rewritten rdr_env envs ev eq_rel ty1' ps_ty1 ty2  ps_ty2
-  | Just ty2' <- coreView ty2 = can_eq_nc rewritten rdr_env envs ev eq_rel ty1  ps_ty1 ty2' ps_ty2
+can_eq_nc rewritten rdr_env envs ienvs ev eq_rel ty1 ps_ty1 ty2 ps_ty2
+  | Just ty1' <- coreView ty1 = can_eq_nc rewritten rdr_env envs ienvs ev eq_rel ty1' ps_ty1 ty2  ps_ty2
+  | Just ty2' <- coreView ty2 = can_eq_nc rewritten rdr_env envs ienvs ev eq_rel ty1  ps_ty1 ty2' ps_ty2
 
 -- need to check for reflexivity in the ReprEq case.
 -- See Note [Eager reflexivity check]
 -- Check only when rewritten because the zonk_eq_types check in canEqNC takes
 -- care of the non-rewritten case.
-can_eq_nc True _rdr_env _envs ev ReprEq ty1 _ ty2 _
+can_eq_nc True _rdr_env _envs _ienvs ev ReprEq ty1 _ ty2 _
   | ty1 `tcEqType` ty2
   = canEqReflexive ev ReprEq ty1
 
 -- When working with ReprEq, unwrap newtypes.
 -- See Note [Unwrap newtypes first]
 -- This must be above the TyVarTy case, in order to guarantee (TyEq:N)
-can_eq_nc _rewritten rdr_env envs ev eq_rel ty1 ps_ty1 ty2 ps_ty2
+can_eq_nc _rewritten rdr_env envs ienvs ev eq_rel ty1 ps_ty1 ty2 ps_ty2
   | ReprEq <- eq_rel
   , Just stuff1 <- tcTopNormaliseNewTypeTF_maybe envs rdr_env ty1
-  = can_eq_newtype_nc rdr_env envs ev NotSwapped ty1 stuff1 ty2 ps_ty2
+  = can_eq_newtype_nc rdr_env envs ienvs ev NotSwapped ty1 stuff1 ty2 ps_ty2
 
   | ReprEq <- eq_rel
   , Just stuff2 <- tcTopNormaliseNewTypeTF_maybe envs rdr_env ty2
-  = can_eq_newtype_nc rdr_env envs ev IsSwapped ty2 stuff2 ty1 ps_ty1
+  = can_eq_newtype_nc rdr_env envs ienvs ev IsSwapped ty2 stuff2 ty1 ps_ty1
 
 -- Then, get rid of casts
-can_eq_nc rewritten rdr_env envs ev eq_rel (CastTy ty1 co1) _ ty2 ps_ty2
+can_eq_nc rewritten rdr_env envs ienvs ev eq_rel (CastTy ty1 co1) _ ty2 ps_ty2
   | isNothing (canEqLHS_maybe ty2)  -- See (EIK3) in Note [Equalities with incompatible kinds]
-  = canEqCast rewritten rdr_env envs ev eq_rel NotSwapped ty1 co1 ty2 ps_ty2
-can_eq_nc rewritten rdr_env envs ev eq_rel ty1 ps_ty1 (CastTy ty2 co2) _
+  = canEqCast rewritten rdr_env envs ienvs ev eq_rel NotSwapped ty1 co1 ty2 ps_ty2
+can_eq_nc rewritten rdr_env envs ienvs ev eq_rel ty1 ps_ty1 (CastTy ty2 co2) _
   | isNothing (canEqLHS_maybe ty1)  -- See (EIK3) in Note [Equalities with incompatible kinds]
-  = canEqCast rewritten rdr_env envs ev eq_rel IsSwapped ty2 co2 ty1 ps_ty1
+  = canEqCast rewritten rdr_env envs ienvs ev eq_rel IsSwapped ty2 co2 ty1 ps_ty1
 
 ----------------------
 -- Otherwise try to decompose
 ----------------------
 
 -- Literals
-can_eq_nc _rewritten _rdr_env _envs ev eq_rel ty1@(LitTy l1) _ (LitTy l2) _
+can_eq_nc _rewritten _rdr_env _envs _ienvs ev eq_rel ty1@(LitTy l1) _ (LitTy l2) _
  | l1 == l2
   = do { setEvBindIfWanted ev EvCanonical (evCoercion $ mkReflCo (eqRelRole eq_rel) ty1)
        ; stopWith ev "Equal LitTy" }
 
 -- Decompose FunTy: (s -> t) and (c => t)
 -- NB: don't decompose (Int -> blah) ~ (Show a => blah)
-can_eq_nc _rewritten _rdr_env _envs ev eq_rel
-           ty1@(FunTy { ft_mult = am1, ft_af = af1, ft_arg = ty1a, ft_res = ty1b }) _ps_ty1
-           ty2@(FunTy { ft_mult = am2, ft_af = af2, ft_arg = ty2a, ft_res = ty2b }) _ps_ty2
+can_eq_nc _rewritten _rdr_env _envs _ienvs ev eq_rel
+           ty1@(FunTy { ft_mult = am1, ft_af = af1, ft_arg = ty1a, ft_res = ty1b, ft_mat = m1 }) _ps_ty1
+           ty2@(FunTy { ft_mult = am2, ft_af = af2, ft_arg = ty2a, ft_res = ty2b, ft_mat = m2 }) _ps_ty2
   | af1 == af2  -- See Note [Decomposing FunTy]
-  = canDecomposableFunTy ev eq_rel af1 (ty1,am1,ty1a,ty1b) (ty2,am2,ty2a,ty2b)
+  = canDecomposableFunTy ev eq_rel af1 (ty1,am1,m1,ty1a,ty1b) (ty2,am2,m2,ty2a,ty2b)
+
 
 -- Decompose type constructor applications
 -- NB: we have expanded type synonyms already
-can_eq_nc rewritten _rdr_env _envs ev eq_rel ty1 _ ty2 _
+can_eq_nc rewritten _rdr_env _envs ienvs ev eq_rel ty1 _ ty2 _
   | Just (tc1, tys1) <- tcSplitTyConApp_maybe ty1
   , Just (tc2, tys2) <- tcSplitTyConApp_maybe ty2
    -- tcSplitTyConApp_maybe: we want to catch e.g. Maybe Int ~ (Int -> Int)
    -- here for better error messages rather than decomposing into AppTys;
    -- hence not using a direct match on TyConApp
-
-  , not (isTypeFamilyTyCon tc1 || isTypeFamilyTyCon tc2)
-    -- A type family at the top of LHS or RHS: we want to fall through
-    -- to the canonical-LHS cases (look for canEqLHS_maybe)
-
-  -- See (TC1) in Note [Canonicalising TyCon/TyCon equalities]
-  , let role            = eqRelRole eq_rel
+  , let role = eqRelRole eq_rel
         both_generative = isGenerativeTyCon tc1 role && isGenerativeTyCon tc2 role
+  , not (isTypeFamilyTyCon tc1) && not (isTypeFamilyTyCon tc2)     
   , rewritten || both_generative
   = canTyConApp ev eq_rel both_generative (ty1,tc1,tys1) (ty2,tc2,tys2)
 
-can_eq_nc _rewritten _rdr_env _envs ev eq_rel
+can_eq_nc _rewritten _rdr_env _envs _ienvs ev eq_rel
            s1@ForAllTy{} _
            s2@ForAllTy{} _
   = can_eq_nc_forall ev eq_rel s1 s2
+
+-- Maybe a = TyConApp (Maybe) (a)
+-- foo :: forall a b . (Maybe a ~ Maybe b) => a -> b
+
 
 -- See Note [Canonicalising type applications] about why we require rewritten types
 -- Use tcSplitAppTy, not matching on AppTy, to catch oversaturated type families
 -- NB: Only decompose AppTy for nominal equality.
 --     See Note [Decomposing AppTy equalities]
-can_eq_nc True _rdr_env _envs ev NomEq ty1 _ ty2 _
+-- !FLAG -> Decomposing AppTy now needs Matchable(!) constraints :D
+can_eq_nc True _rdr_env _envs _ienvs ev NomEq ty1 _ ty2 _
   | Just (t1, s1) <- tcSplitAppTy_maybe ty1
   , Just (t2, s2) <- tcSplitAppTy_maybe ty2
-  = can_eq_app ev t1 s1 t2 s2
+  = do { matchable_class <- tcLookupClass matchableClassName       
+       ; traceTcS "can_eq_nc: Decomposing types " (ppr ty1 $$ ppr ty2 $$ ppr t1 $$ ppr t2)
+       ; unless ((t1 `eqType` t2 && s1 `eqType` s2) || isWanted ev) $ do {
+            traceTcS "can_eq_nc: Emitting Matchable constraint for type " (ppr t1)
+          ; emitMatchableConstraint matchable_class ev t1 }
+       ; unless ((t1 `eqType` t2 && s1 `eqType` s2) || isWanted ev) $ do {
+            traceTcS "can_eq_nc: Emitting Matchable constraint for type " (ppr t2)
+          ; emitMatchableConstraint matchable_class ev t2 }
 
+       ; can_eq_app ev t1 s1 t2 s2 }
+
+-- dMatchable_a38U
+-- dMatchable_a38T
+
+-- data Matchability = Matchable | Unmatchable 
+-- type (->) :: * -> * -> Matchability -> Type
+
+
+-- foo :: forall f a b . (f a ~ f b) => a -> b
+-- foo = id
+
+-- forall m .
 -------------------
 -- Can't decompose.
 -------------------
 
 -- No similarity in type structure detected. Rewrite and try again.
-can_eq_nc False rdr_env envs ev eq_rel _ ps_ty1 _ ps_ty2
+can_eq_nc False rdr_env envs ienvs ev eq_rel _ ps_ty1 _ ps_ty2
   = -- Rewrite the two types and try again
     do { (redn1@(Reduction _ xi1), rewriters1) <- rewrite ev ps_ty1
        ; (redn2@(Reduction _ xi2), rewriters2) <- rewrite ev ps_ty2
        ; new_ev <- rewriteEqEvidence (rewriters1 S.<> rewriters2) ev NotSwapped redn1 redn2
        ; traceTcS "can_eq_nc: go round again" (ppr new_ev $$ ppr xi1 $$ ppr xi2)
-       ; can_eq_nc True rdr_env envs new_ev eq_rel xi1 xi1 xi2 xi2 }
+       ; can_eq_nc True rdr_env envs ienvs new_ev eq_rel xi1 xi1 xi2 xi2 }
 
 ----------------------------
 -- Look for a canonical LHS.
@@ -418,7 +485,7 @@ can_eq_nc False rdr_env envs ev eq_rel _ ps_ty1 _ ps_ty2
 -- This means we've rewritten any variables and reduced any type family redexes
 -- See also Note [No top-level newtypes on RHS of representational equalities]
 
-can_eq_nc True _rdr_env _envs ev eq_rel ty1 ps_ty1 ty2 ps_ty2
+can_eq_nc True _rdr_env _envs _ienvs ev eq_rel ty1 ps_ty1 ty2 ps_ty2
   | Just can_eq_lhs1 <- canEqLHS_maybe ty1
   = do { traceTcS "can_eq1" (ppr ty1 $$ ppr ty2)
        ; canEqCanLHS ev eq_rel NotSwapped can_eq_lhs1 ps_ty1 ty2 ps_ty2 }
@@ -440,7 +507,7 @@ can_eq_nc True _rdr_env _envs ev eq_rel ty1 ps_ty1 ty2 ps_ty2
 ----------------------------
 
 -- We've rewritten and the types don't match. Give up.
-can_eq_nc True _rdr_env _envs ev eq_rel _ ps_ty1 _ ps_ty2
+can_eq_nc True _rdr_env _envs _ienvs ev eq_rel _ ps_ty1 _ ps_ty2
   = do { traceTcS "can_eq_nc catch-all case" (ppr ps_ty1 $$ ppr ps_ty2)
        ; case eq_rel of -- See Note [Unsolved equalities]
             ReprEq -> finishCanWithIrred ReprEqReason ev
@@ -708,7 +775,7 @@ though, because we check our depth in `can_eq_newtype_nc`.
 
 ------------------------
 -- | We're able to unwrap a newtype. Update the bits accordingly.
-can_eq_newtype_nc :: GlobalRdrEnv -> FamInstEnvs
+can_eq_newtype_nc :: GlobalRdrEnv -> FamInstEnvs -> InstEnvs
                   -> CtEvidence           -- ^ :: ty1 ~ ty2
                   -> SwapFlag
                   -> TcType                                    -- ^ ty1
@@ -716,7 +783,7 @@ can_eq_newtype_nc :: GlobalRdrEnv -> FamInstEnvs
                   -> TcType               -- ^ ty2
                   -> TcType               -- ^ ty2, with type synonyms
                   -> TcS (StopOrContinue (Either IrredCt EqCt))
-can_eq_newtype_nc rdr_env envs ev swapped ty1 ((gres, co1), ty1') ty2 ps_ty2
+can_eq_newtype_nc rdr_env envs ienvs ev swapped ty1 ((gres, co1), ty1') ty2 ps_ty2
   = do { traceTcS "can_eq_newtype_nc" $
          vcat [ ppr ev, ppr swapped, ppr co1, ppr gres, ppr ty1', ppr ty2 ]
 
@@ -735,12 +802,13 @@ can_eq_newtype_nc rdr_env envs ev swapped ty1 ((gres, co1), ty1') ty2 ps_ty2
        ; new_ev <- rewriteEqEvidence emptyRewriterSet ev' swapped
                      redn1 (mkReflRedn Representational ps_ty2)
 
-       ; can_eq_nc False rdr_env envs new_ev ReprEq ty1' ty1' ty2 ps_ty2 }
+       ; can_eq_nc False rdr_env envs ienvs new_ev ReprEq ty1' ty1' ty2 ps_ty2 }
 
 ---------
 -- ^ Decompose a type application.
 -- All input types must be rewritten. See Note [Canonicalising type applications]
 -- Nominal equality only!
+-- !FLAG -> Need to change this too
 can_eq_app :: CtEvidence       -- :: s1 t1 ~N s2 t2
            -> Xi -> Xi         -- s1 t1
            -> Xi -> Xi         -- s2 t2
@@ -798,21 +866,21 @@ can_eq_app ev s1 t1 s2 t2
 -- | Break apart an equality over a casted type
 -- looking like   (ty1 |> co1) ~ ty2   (modulo a swap-flag)
 canEqCast :: Bool         -- are both types rewritten?
-          -> GlobalRdrEnv -> FamInstEnvs
+          -> GlobalRdrEnv -> FamInstEnvs -> InstEnvs
           -> CtEvidence
           -> EqRel
           -> SwapFlag
           -> TcType -> Coercion   -- LHS (res. RHS), ty1 |> co1
           -> TcType -> TcType     -- RHS (res. LHS), ty2 both normal and pretty
           -> TcS (StopOrContinue (Either IrredCt EqCt))
-canEqCast rewritten rdr_env envs ev eq_rel swapped ty1 co1 ty2 ps_ty2
+canEqCast rewritten rdr_env envs ienvs ev eq_rel swapped ty1 co1 ty2 ps_ty2
   = do { traceTcS "Decomposing cast" (vcat [ ppr ev
                                            , ppr ty1 <+> text "|>" <+> ppr co1
                                            , ppr ps_ty2 ])
        ; new_ev <- rewriteEqEvidence emptyRewriterSet ev swapped
                       (mkGReflLeftRedn role ty1 co1)
                       (mkReflRedn role ps_ty2)
-       ; can_eq_nc rewritten rdr_env envs new_ev eq_rel ty1 ty1 ty2 ps_ty2 }
+       ; can_eq_nc rewritten rdr_env envs ienvs new_ev eq_rel ty1 ty1 ty2 ps_ty2 }
   where
     role = eqRelRole eq_rel
 
@@ -825,6 +893,8 @@ canTyConApp :: CtEvidence -> EqRel
 -- See Note [Decomposing TyConApp equalities]
 -- Neither tc1 nor tc2 is a saturated funTyCon, nor a type family
 -- But they can be data families.
+
+-- ! FLAG -> I think this needs to be changed too
 canTyConApp ev eq_rel both_generative (ty1,tc1,tys1) (ty2,tc2,tys2)
   | tc1 == tc2
   , tys1 `equalLength` tys2
@@ -834,10 +904,12 @@ canTyConApp ev eq_rel both_generative (ty1,tc1,tys1) (ty2,tc2,tys2)
          else canEqSoftFailure ev eq_rel ty1 ty2 }
 
   -- See Note [Skolem abstract data] in GHC.Core.Tycon
+  -- ! unsure if this still holds after matchability but sure
   | tyConSkolem tc1 || tyConSkolem tc2
   = do { traceTcS "canTyConApp: skolem abstract" (ppr tc1 $$ ppr tc2)
        ; finishCanWithIrred AbstractTyConReason ev }
 
+  -- ! just a failure case here
   | otherwise  -- Different TyCons
   = if both_generative -- See (TC2) and (TC3) in
                        -- Note [Canonicalising TyCon/TyCon equalities]
@@ -1375,10 +1447,10 @@ canDecomposableTyConAppOK ev eq_rel tc (ty1,tys1) (ty2,tys2)
                ++ repeat loc
 
 canDecomposableFunTy :: CtEvidence -> EqRel -> FunTyFlag
-                     -> (Type,Type,Type,Type)   -- (fun_ty,multiplicity,arg,res)
-                     -> (Type,Type,Type,Type)   -- (fun_ty,multiplicity,arg,res)
+                     -> (Type,Type,Type,Type,Type)   -- (fun_ty,multiplicity,arg,res)
+                     -> (Type,Type,Type,Type,Type)   -- (fun_ty,multiplicity,arg,res)
                      -> TcS (StopOrContinue a)
-canDecomposableFunTy ev eq_rel af f1@(ty1,m1,a1,r1) f2@(ty2,m2,a2,r2)
+canDecomposableFunTy ev eq_rel af f1@(ty1,m1,m1',a1,r1) f2@(ty2,m2,m2',a2,r2)
   = do { traceTcS "canDecomposableFunTy"
                   (ppr ev $$ ppr eq_rel $$ ppr f1 $$ ppr f2)
        ; case ev of
@@ -1386,10 +1458,13 @@ canDecomposableFunTy ev eq_rel af f1@(ty1,m1,a1,r1) f2@(ty2,m2,a2,r2)
              -> do { (co, _, _) <- wrapUnifierTcS ev Nominal $ \ uenv ->
                         do { let mult_env = uenv `updUEnvLoc` toInvisibleLoc
                                                  `setUEnvRole` funRole role SelMult
+                                 mat_env = uenv `updUEnvLoc` toInvisibleLoc
+                                                 `setUEnvRole` funRole role SelMat
                            ; mult <- uType mult_env m1 m2
                            ; arg  <- uType (uenv `setUEnvRole` funRole role SelArg) a1 a2
                            ; res  <- uType (uenv `setUEnvRole` funRole role SelRes) r1 r2
-                           ; return (mkNakedFunCo role af mult arg res) }
+                           ; mat <- uType mat_env m1' m2'
+                           ; return (mkNakedFunCo role af mult mat arg res) }
                    ; setWantedEq dest co }
 
            CtGiven (GivenCt { ctev_evar = evar })
@@ -1400,7 +1475,7 @@ canDecomposableFunTy ev eq_rel af f1@(ty1,m1,a1,r1) f2@(ty2,m2,a2,r2)
                    --           See the call to canonicaliseEquality in solveEquality.
              -> emitNewGivens loc
                        [ (funRole role fs, mkSelCo (SelFun fs) ev_co)
-                       | fs <- [SelMult, SelArg, SelRes] ]
+                       | fs <- [SelMult, SelMat, SelArg, SelRes] ]
 
     ; stopWith ev "Decomposed TyConApp" }
 

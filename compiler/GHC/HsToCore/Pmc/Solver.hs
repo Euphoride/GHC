@@ -1538,7 +1538,7 @@ instCon fuel nabla@MkNabla{nabla_ty_st = ty_st} x con = {-# SCC "instCon" #-} Ma
         [ ppr x <+> dcolon <+> ppr match_ty
         , text "In WHNF:" <+> ppr (isSourceTypeInWHNF match_ty) <+> ppr norm_match_ty
         , ppr con <+> dcolon <+> text "... ->" <+> ppr _con_res_ty
-        , ppr (map (\tv -> ppr tv <+> char '↦' <+> ppr (substTyVar sigma_univ tv)) _univ_tvs)
+        , ppr (map (\tv -> ppr tv <+> char '↦' <+> ppr (substTyVar sigma_univ tv Matchable)) _univ_tvs)
         , ppr gammas
         , ppr (map (\x -> ppr x <+> dcolon <+> ppr (idType x)) arg_ids)
         ]
@@ -1559,7 +1559,7 @@ instCon fuel nabla@MkNabla{nabla_ty_st = ty_st} x con = {-# SCC "instCon" #-} Ma
           , ppr x <+> dcolon <+> ppr match_ty
           , text "In WHNF:" <+> ppr (isSourceTypeInWHNF match_ty) <+> ppr norm_match_ty
           , ppr con <+> dcolon <+> text "... ->" <+> ppr _con_res_ty
-          , ppr (map (\tv -> ppr tv <+> char '↦' <+> ppr (substTyVar sigma_univ tv)) _univ_tvs)
+          , ppr (map (\tv -> ppr tv <+> char '↦' <+> ppr (substTyVar sigma_univ tv Matchable)) _univ_tvs)
           , ppr gammas
           , ppr (map (\x -> ppr x <+> dcolon <+> ppr (idType x)) arg_ids)
           , ppr branching_factor

@@ -79,7 +79,7 @@ resolveVisibility kind ty_args
     go env (FunTy { ft_res = res }) (t:ts) -- No type-class args in tycon apps
       = (True,t) : (go env res ts)
 
-    go env (TyVarTy tv) ts
+    go env (TyVarTy tv _)  ts
       | Just ki <- lookupTyVar env tv = go env ki ts
     go env kind (t:ts) = (True, t) : (go env kind ts) -- Ill-kinded
 
@@ -167,8 +167,8 @@ hieTypeToIface = foldType go
     go (HLitTy l) = IfaceLitTy l
     go (HForAllTy ((n,k),af) t) = let b = (mkIfLclName (occNameFS $ getOccName n), k)
                                   in IfaceForAllTy (Bndr (IfaceTvBndr b) af) t
-    go (HFunTy w a b)   = IfaceFunTy visArgTypeLike   w       a    b
-    go (HQualTy pred b) = IfaceFunTy invisArgTypeLike many_ty pred b
+    go (HFunTy w m a b)   = IfaceFunTy visArgTypeLike   w m      a    b
+    go (HQualTy m pred b) = IfaceFunTy invisArgTypeLike many_ty m pred b
     go (HCastTy a) = a
     go HCoercionTy = IfaceTyVar (mkIfLclName "<coercion type>")
     go (HTyConApp a xs) = IfaceTyConApp a (hieToIfaceArgs xs)
@@ -228,7 +228,8 @@ getTypeIndex t
         HTS (extendTypeMap tm t i) (IM.insert i ht tt) fi
       return i
 
-    go (TyVarTy v) = return $ HTyVarTy $ varName v
+    -- ! FLAG -> This might need altering HTyVarTy too
+    go (TyVarTy v _) = return $ HTyVarTy $ varName v
     go ty@(AppTy _ _) = do
       let (head,args) = splitAppTys ty
           visArgs = HieArgs $ resolveVisibility (typeKind head) args
@@ -243,13 +244,14 @@ getTypeIndex t
       k <- getTypeIndex (varType v)
       i <- getTypeIndex t
       return $ HForAllTy ((varName v,k),a) i
-    go (FunTy { ft_af = af, ft_mult = w, ft_arg = a, ft_res = b }) = do
+    go (FunTy { ft_af = af, ft_mult = w, ft_arg = a, ft_res = b, ft_mat = m }) = do
       ai <- getTypeIndex a
       bi <- getTypeIndex b
       wi <- getTypeIndex w
+      mi <- getTypeIndex m
       return $ if isInvisibleFunArg af
-               then assert (isManyTy w) $ HQualTy ai bi
-               else                       HFunTy wi ai bi
+               then assert (isManyTy w) $ HQualTy mi ai bi
+               else                       HFunTy wi mi ai bi
     go (LitTy a) = return $ HLitTy $ toIfaceTyLit a
     go (CastTy t _) = do
       i <- getTypeIndex t

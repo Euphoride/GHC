@@ -17,7 +17,7 @@
 -----------------------------------------------------------------------------
 
 module GHC.Internal.Tuple (
-  Tuple0, Tuple1,
+  Tuple0, Tuple1, trivialMatchableDict,
   Unit(..),
   Solo (Solo, MkSolo), getSolo,
   Tuple2(..),  Tuple3(..),  Tuple4(..),  Tuple5(..),  Tuple6(..),  Tuple7(..),  Tuple8(..),  Tuple9(..),
@@ -40,6 +40,10 @@ default () -- Double and Integer aren't available yet
 -- @since 0.11.0
 --
 data Unit = ()
+
+{-# NOINLINE trivialMatchableDict #-}
+trivialMatchableDict :: ()
+trivialMatchableDict = ()
 
 -- The desugarer uses 1-tuples,
 -- but "Unit" is already used up for 0-tuples

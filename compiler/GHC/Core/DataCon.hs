@@ -75,12 +75,14 @@ import Language.Haskell.Syntax.Basic
 import Language.Haskell.Syntax.Module.Name
 
 import {-# SOURCE #-} GHC.Types.Id.Make ( DataConBoxer )
+import GHC.Core.TyCo.Rep (Type(..), mkMatchableInvisFunTys)
 import GHC.Core.Type as Type
 import GHC.Core.Coercion
 import GHC.Core.Unify
 import GHC.Core.TyCon
 import GHC.Core.TyCo.Subst
 import GHC.Core.TyCo.Compare( eqType )
+import GHC.Core.TyCo.Rep (Matchability(..))
 import GHC.Core.Multiplicity
 import {-# SOURCE #-} GHC.Types.TyThing
 import GHC.Types.FieldLabel
@@ -113,6 +115,8 @@ import qualified Data.Data as Data
 import Data.Char
 import Data.List( find )
 import Control.DeepSeq
+import {-# SOURCE #-} GHC.Builtin.Types (matchableDataConTy)
+
 
 {-
 Note [Data constructor representation]
@@ -1575,8 +1579,8 @@ dataConWrapperType (MkData { dcUserTyVarBinders = user_tvbs,
                              dcOrigResTy = res_ty,
                              dcStupidTheta = stupid_theta })
   = mkInvisForAllTys user_tvbs $
-    mkInvisFunTys (stupid_theta ++ theta) $
-    mkScaledFunTys arg_tys $
+    mkMatchableInvisFunTys (stupid_theta ++ theta) $
+    mkScaledFunctionTys arg_tys $
     res_ty
 
 dataConNonlinearType :: DataCon -> Type
@@ -1587,8 +1591,8 @@ dataConNonlinearType (MkData { dcUserTyVarBinders = user_tvbs,
                                dcOrigResTy = res_ty,
                                dcStupidTheta = stupid_theta })
   = mkInvisForAllTys user_tvbs $
-    mkInvisFunTys (stupid_theta ++ theta) $
-    mkScaledFunTys arg_tys' $
+    mkMatchableInvisFunTys (stupid_theta ++ theta) $
+    mkScaledFunctionTys arg_tys' $
     res_ty
   where
     arg_tys' = map (\(Scaled w t) -> Scaled (case w of OneTy -> ManyTy; _ -> w) t) arg_tys
@@ -1878,7 +1882,7 @@ dataConResRepTyArgs dc@(MkData { dcRepTyCon = rep_tc, dcOrigResTy = orig_res_ty 
     -- These tyvars are the domain of subst
     -- Fvs(range(subst)) = tvars of the datacon
     case  tcMatchTy (mkTyConApp fam_tc fam_args) orig_res_ty of
-       Just subst -> map (substTyVar subst) (tyConTyVars rep_tc)
+       Just subst -> map (\v -> substTyVar subst v MaybeUnmatchable) (tyConTyVars rep_tc)
        Nothing    -> pprPanic "datacOnResRepTyArgs" $
                      vcat [ ppr dc, ppr fam_tc <+> ppr fam_args
                           , ppr orig_res_ty ]

@@ -81,6 +81,7 @@ Other Prelude modules are much easier with fewer complex dependencies.
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE UnboxedTuples #-}
 {-# LANGUAGE Unsafe #-}
+-- {-# LANGUAGE FlexibleInstances #-}
 
 -- -Wno-orphans is needed for things like:
 -- Orphan rule: "x# -# x#" ALWAYS forall x# :: Int# -# x# x# = 0

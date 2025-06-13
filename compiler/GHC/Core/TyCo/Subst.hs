@@ -785,7 +785,7 @@ subst_ty :: Subst -> Type -> Type
 subst_ty subst ty
    = go ty
   where
-    go (TyVarTy tv)      = substTyVar subst tv
+    go (TyVarTy tv m)      = substTyVar subst tv m
     go (AppTy fun arg)   = (mkAppTy $! (go fun)) $! (go arg)
                 -- The mkAppTy smart constructor is important
                 -- we might be replacing (a Int), represented with App
@@ -796,11 +796,12 @@ subst_ty subst ty
                                -- mkTyConApp has optimizations.
                                -- See Note [Using synonyms to compress types]
                                -- in GHC.Core.Type
-    go ty@(FunTy { ft_mult = mult, ft_arg = arg, ft_res = res })
+    go ty@(FunTy { ft_mult = mult, ft_arg = arg, ft_res = res, ft_mat = mat })
       = let !mult' = go mult
             !arg' = go arg
             !res' = go res
-        in ty { ft_mult = mult', ft_arg = arg', ft_res = res' }
+            !mat' = go mat
+        in ty { ft_mult = mult', ft_arg = arg', ft_res = res', ft_mat = mat' }
     go (ForAllTy (Bndr tv vis) ty)
                          = case substVarBndrUnchecked subst tv of
                              (subst', tv') ->
@@ -810,12 +811,12 @@ subst_ty subst ty
     go (CastTy ty co)    = (mkCastTy $! (go ty)) $! (subst_co subst co)
     go (CoercionTy co)   = CoercionTy $! (subst_co subst co)
 
-substTyVar :: Subst -> TyVar -> Type
-substTyVar (Subst _ _ tenv _) tv
+substTyVar :: Subst -> TyVar -> Matchability -> Type
+substTyVar (Subst _ _ tenv _) tv m
   = assert (isTyVar tv) $
     case lookupVarEnv tenv tv of
       Just ty -> ty
-      Nothing -> TyVarTy tv
+      Nothing -> TyVarTy tv m
 
 substTyVarToTyVar :: HasDebugCallStack => Subst -> TyVar -> TyVar
 -- Apply the substitution, expecting the result to be a TyVarTy
@@ -828,14 +829,14 @@ substTyVarToTyVar (Subst _ _ tenv _) tv
       Nothing -> tv
 
 substTyVars :: Subst -> [TyVar] -> [Type]
-substTyVars subst = map $ substTyVar subst
+substTyVars subst = map $ \v -> substTyVar subst v MaybeUnmatchable
 
 substTyCoVars :: Subst -> [TyCoVar] -> [Type]
 substTyCoVars subst = map $ substTyCoVar subst
 
 substTyCoVar :: Subst -> TyCoVar -> Type
 substTyCoVar subst tv
-  | isTyVar tv = substTyVar subst tv
+  | isTyVar tv = substTyVar subst tv MaybeUnmatchable
   | otherwise = CoercionTy $ substCoVar subst tv
 
 lookupTyVar :: Subst -> TyVar  -> Maybe Type
@@ -891,7 +892,7 @@ subst_co subst co
       = case substForAllCoBndrUnchecked subst tv kind_co of
          (subst', tv', kind_co') ->
           ((mkForAllCo $! tv') visL visR $! kind_co') $! subst_co subst' co
-    go (FunCo r afl afr w co1 co2)   = ((mkFunCo2 r afl afr $! go w) $! go co1) $! go co2
+    go (FunCo r afl afr w m co1 co2)   = (((mkFunCo2 r afl afr $! go w) $! go m) $! go co1) $! go co2
     go (CoVarCo cv)          = substCoVar subst cv
     go (UnivCo { uco_prov = p, uco_role = r
                , uco_lty = t1, uco_rty = t2, uco_deps = deps })
@@ -956,9 +957,9 @@ substForAllCoTyVarBndrUsing sym sco (Subst in_scope idenv tenv cenv) old_var old
             = delVarEnv tenv old_var
             | isSwapped sym
             = extendVarEnv tenv old_var $
-              TyVarTy new_var `CastTy` new_kind_co
+              TyVarTy new_var MaybeUnmatchable `CastTy` new_kind_co
             | otherwise
-            = extendVarEnv tenv old_var (TyVarTy new_var)
+            = extendVarEnv tenv old_var (TyVarTy new_var MaybeUnmatchable)
 
     no_kind_change = noFreeVarsOfCo old_kind_co
     no_change = no_kind_change && (new_var == old_var)
@@ -1053,7 +1054,7 @@ substTyVarBndrUsing subst_fn subst@(Subst in_scope idenv tenv cenv) old_var
     (Subst (in_scope `extendInScopeSet` new_var) idenv new_env cenv, new_var)
   where
     new_env | no_change = delVarEnv tenv old_var
-            | otherwise = extendVarEnv tenv old_var (TyVarTy new_var)
+            | otherwise = extendVarEnv tenv old_var (TyVarTy new_var MaybeUnmatchable)
 
     _no_capture = not (new_var `elemVarSet` shallowTyCoVarsOfTyVarEnv tenv)
     -- Assertion check that we are not capturing something in the substitution

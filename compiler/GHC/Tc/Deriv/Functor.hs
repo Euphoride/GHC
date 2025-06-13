@@ -510,7 +510,7 @@ functorLikeTraverse var (FT { ft_triv = caseTrivial,     ft_var = caseVar
        -> (a, Bool)   -- (result of type a, does type contain var)
 
     go co ty | Just ty' <- coreView ty = go co ty'
-    go co (TyVarTy    v) | v == var = (if co then caseCoVar else caseVar,True)
+    go co (TyVarTy    v _) | v == var = (if co then caseCoVar else caseVar,True)
     go co (FunTy { ft_arg = x, ft_res = y, ft_af = af })
        | isInvisibleFunArg af = go co y
        | xc || yc             = (caseFun xr yr,True)

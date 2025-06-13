@@ -181,7 +181,7 @@ toIfaceTypeX :: VarSet -> Type -> IfaceType
 --    translates the tyvars in 'free' as IfaceFreeTyVars
 --
 -- Synonyms are retained in the interface type
-toIfaceTypeX fr (TyVarTy tv)   -- See Note [Free TyVars and CoVars in IfaceType] in GHC.Iface.Type
+toIfaceTypeX fr (TyVarTy tv _)   -- See Note [Free TyVars and CoVars in IfaceType] in GHC.Iface.Type
   | tv `elemVarSet` fr         = IfaceFreeTyVar tv
   | otherwise                  = IfaceTyVar (toIfaceTyVar tv)
 toIfaceTypeX fr ty@(AppTy {})  =
@@ -193,8 +193,8 @@ toIfaceTypeX fr ty@(AppTy {})  =
 toIfaceTypeX _  (LitTy n)      = IfaceLitTy (toIfaceTyLit n)
 toIfaceTypeX fr (ForAllTy b t) = IfaceForAllTy (toIfaceForAllBndrX fr b)
                                                (toIfaceTypeX (fr `delVarSet` binderVar b) t)
-toIfaceTypeX fr (FunTy { ft_arg = t1, ft_mult = w, ft_res = t2, ft_af = af })
-  = IfaceFunTy af (toIfaceTypeX fr w) (toIfaceTypeX fr t1) (toIfaceTypeX fr t2)
+toIfaceTypeX fr (FunTy { ft_arg = t1, ft_mult = w, ft_res = t2, ft_af = af, ft_mat = m })
+  = IfaceFunTy af (toIfaceTypeX fr w) (toIfaceTypeX fr m) (toIfaceTypeX fr t1) (toIfaceTypeX fr t2)
 toIfaceTypeX fr (CastTy ty co)  = IfaceCastTy (toIfaceTypeX fr ty) (toIfaceCoercionX fr co)
 toIfaceTypeX fr (CoercionTy co) = IfaceCoercionTy (toIfaceCoercionX fr co)
 
@@ -309,8 +309,8 @@ toIfaceCoercionX fr co
       =  assertPpr (isNothing (tyConAppFunCo_maybe r tc cos)) (ppr co) $
          IfaceTyConAppCo r (toIfaceTyCon tc) (map go cos)
 
-    go (FunCo { fco_role = r, fco_mult = w, fco_arg = co1, fco_res = co2 })
-      = IfaceFunCo r (go w) (go co1) (go co2)
+    go (FunCo { fco_role = r, fco_mult = w, fco_arg = co1, fco_res = co2, fco_mat = m })
+      = IfaceFunCo r (go w) (go m) (go co1) (go co2)
 
     go (ForAllCo tv visL visR k co)
       = IfaceForAllCo (toIfaceBndr tv)
