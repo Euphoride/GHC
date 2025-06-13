@@ -156,6 +156,17 @@ module GHC.Builtin.Types (
 
         unrestrictedFunTyCon, unrestrictedFunTyConName,
 
+        unmatchableFunTyCon, unmatchableFunTyConName,
+
+
+        -- * Matchability
+
+        matchabilityTyConName, matchableDataConName, unmatchableDataConName,
+        matchabilityTy, matchabilityTyCon,
+        matchableDataCon, unmatchableDataCon,
+        matchableDataConTy, unmatchableDataConTy,
+        matchableDataConTyCon, unmatchableDataConTyCon,
+
         -- * Bignum
         integerTy, integerTyCon, integerTyConName,
         integerISDataCon, integerISDataConName,
@@ -321,7 +332,9 @@ wiredInTyCons = map (dataConTyCon . snd) boxingDataCons
                 , liftedTypeKindTyCon
                 , unliftedTypeKindTyCon
                 , unrestrictedFunTyCon
+                , unmatchableFunTyCon
                 , multiplicityTyCon
+                , matchabilityTyCon
                 , naturalTyCon
                 , integerTyCon
                 , liftedRepTyCon
@@ -922,6 +935,7 @@ And here are the properties of `isBuiltInOcc_maybe`:
 isBuiltInOcc_maybe :: Bool -> OccName -> Maybe Name
 isBuiltInOcc_maybe listTuplePuns occ
   | fs == "->" = Just unrestrictedFunTyConName
+  | fs == "-#" = Just unmatchableFunTyConName
   | fs == "[]" = Just (pun listTyConName nilDataConName)
   | fs == ":"  = Just consDataConName
   | Just n <- (is_boxed_tup_syntax fs) = Just (tup_name Boxed n)
@@ -1818,6 +1832,10 @@ mk_ctuple_class tycon sc_theta sc_sel_ids
 data Multiplicity = One | Many
 -}
 
+matchabilityTyConName :: Name 
+matchabilityTyConName = mkWiredInTyConName UserSyntax gHC_TYPES (fsLit "Matchability")
+                          matchabilityTyConKey matchabilityTyCon
+
 multiplicityTyConName :: Name
 multiplicityTyConName = mkWiredInTyConName UserSyntax gHC_TYPES (fsLit "Multiplicity")
                           multiplicityTyConKey multiplicityTyCon
@@ -1826,16 +1844,31 @@ oneDataConName, manyDataConName :: Name
 oneDataConName  = mkWiredInDataConName UserSyntax gHC_TYPES (fsLit "One") oneDataConKey oneDataCon
 manyDataConName = mkWiredInDataConName UserSyntax gHC_TYPES (fsLit "Many") manyDataConKey manyDataCon
 
+matchableDataConName, unmatchableDataConName :: Name
+matchableDataConName = mkWiredInDataConName UserSyntax gHC_TYPES (fsLit "M") matchableDataConKey matchableDataCon
+unmatchableDataConName = mkWiredInDataConName UserSyntax gHC_TYPES (fsLit "U") unmatchableDataConKey unmatchableDataCon
+
 multiplicityTy :: Type
 multiplicityTy = mkTyConTy multiplicityTyCon
+
+matchabilityTy :: Type
+matchabilityTy = mkTyConTy matchabilityTyCon
 
 multiplicityTyCon :: TyCon
 multiplicityTyCon = pcTyCon multiplicityTyConName Nothing []
                             [oneDataCon, manyDataCon]
 
+matchabilityTyCon :: TyCon
+matchabilityTyCon = pcTyCon matchabilityTyConName Nothing []
+                            [matchableDataCon, unmatchableDataCon]
+
 oneDataCon, manyDataCon :: DataCon
 oneDataCon = pcDataCon oneDataConName [] [] multiplicityTyCon
 manyDataCon = pcDataCon manyDataConName [] [] multiplicityTyCon
+
+matchableDataCon, unmatchableDataCon :: DataCon
+matchableDataCon = pcDataCon matchableDataConName [] [] matchabilityTyCon
+unmatchableDataCon = pcDataCon unmatchableDataConName [] [] matchabilityTyCon
 
 oneDataConTy, manyDataConTy :: Type
 oneDataConTy = mkTyConTy oneDataConTyCon
@@ -1844,6 +1877,14 @@ manyDataConTy = mkTyConTy manyDataConTyCon
 oneDataConTyCon, manyDataConTyCon :: TyCon
 oneDataConTyCon = promoteDataCon oneDataCon
 manyDataConTyCon = promoteDataCon manyDataCon
+
+matchableDataConTy, unmatchableDataConTy :: Type
+matchableDataConTy = mkTyConTy matchableDataConTyCon
+unmatchableDataConTy = mkTyConTy unmatchableDataConTyCon
+
+matchableDataConTyCon, unmatchableDataConTyCon :: TyCon
+matchableDataConTyCon = promoteDataCon matchableDataCon
+unmatchableDataConTyCon = promoteDataCon unmatchableDataCon
 
 multMulTyConName :: Name
 multMulTyConName =
@@ -1860,11 +1901,11 @@ multMulTyCon = mkFamilyTyCon multMulTyConName binders multiplicityTy Nothing
 ------------------------
 -- type (->) :: forall (rep1 :: RuntimeRep) (rep2 :: RuntimeRep).
 --              TYPE rep1 -> TYPE rep2 -> Type
--- type (->) = FUN 'Many
+-- type (->) = FUN 'Many 'M
 unrestrictedFunTyCon :: TyCon
 unrestrictedFunTyCon
   = buildSynTyCon unrestrictedFunTyConName [] arrowKind []
-                  (TyCoRep.TyConApp fUNTyCon [manyDataConTy])
+                  (TyCoRep.TyConApp fUNTyCon [manyDataConTy, matchableDataConTy])
   where
     arrowKind = mkTyConKind binders liftedTypeKind
     -- See also funTyCon
@@ -1876,6 +1917,25 @@ unrestrictedFunTyCon
 unrestrictedFunTyConName :: Name
 unrestrictedFunTyConName = mkWiredInTyConName BuiltInSyntax gHC_TYPES (fsLit "->")
                                               unrestrictedFunTyConKey unrestrictedFunTyCon
+
+
+unmatchableFunTyCon :: TyCon
+unmatchableFunTyCon
+  = buildSynTyCon unmatchableFunTyConName [] arrowKind []
+                  (TyCoRep.TyConApp fUNTyCon [manyDataConTy, unmatchableDataConTy])
+  where
+    arrowKind = mkTyConKind binders liftedTypeKind
+    -- See also funTyCon
+    binders = [ Bndr runtimeRep1TyVar (NamedTCB Inferred)
+              , Bndr runtimeRep2TyVar (NamedTCB Inferred) ]
+              ++ mkTemplateAnonTyConBinders [ mkTYPEapp runtimeRep1Ty
+                                            , mkTYPEapp runtimeRep2Ty ]
+
+unmatchableFunTyConName :: Name
+unmatchableFunTyConName = mkWiredInTyConName BuiltInSyntax gHC_TYPES (fsLit "-#")
+                                              unmatchableFunTyConKey unmatchableFunTyCon
+
+
 
 
 {- *********************************************************************

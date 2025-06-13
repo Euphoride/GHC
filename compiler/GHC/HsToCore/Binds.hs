@@ -54,13 +54,14 @@ import GHC.Core.Unfold.Make
 import GHC.Core.FVs
 import GHC.Core.Predicate
 import GHC.Core.TyCon
+import GHC.Core.DataCon (DataCon)
 import GHC.Core.Type
 import GHC.Core.Coercion
 import GHC.Core.Rules
 import GHC.Core.TyCo.Compare( eqType )
 
 import GHC.Builtin.Names
-import GHC.Builtin.Types ( naturalTy, typeSymbolKind, charTy )
+import GHC.Builtin.Types ( naturalTy, typeSymbolKind, charTy, unitDataCon )
 
 import GHC.Tc.Types.Evidence
 
@@ -1798,6 +1799,8 @@ dsEvTerm (EvFun { et_tvs = tvs, et_given = given
 *                                                                      *
 **********************************************************************-}
 
+-- ! I don't think people realise just how *awful* this is.
+
 dsEvTypeable :: Type -> EvTypeable -> DsM CoreExpr
 -- Return a CoreExpr :: Typeable ty
 -- This code is tightly coupled to the representation
@@ -1813,8 +1816,11 @@ dsEvTypeable ty ev
        -- Package up the method as `Typeable` dictionary
        ; return $ mkConApp typeable_data_con [Type kind, Type ty, rep_expr] }
 
-type TypeRepExpr = CoreExpr
+matchableEv :: DataCon -> Type -> CoreExpr
+matchableEv mdc ty = mkConApp mdc [Type (typeKind ty), Type ty]
 
+type TypeRepExpr = CoreExpr
+-- !FLAG -> Marking to come back here.
 -- | Returns a @CoreExpr :: TypeRep ty@
 ds_ev_typeable :: Type -> EvTypeable -> DsM CoreExpr
 ds_ev_typeable ty (EvTypeableTyCon tc kind_ev)
@@ -1822,6 +1828,8 @@ ds_ev_typeable ty (EvTypeableTyCon tc kind_ev)
                     -- mkTrCon :: forall k (a :: k). TyCon -> TypeRep k -> TypeRep a
        ; someTypeRepTyCon <- dsLookupTyCon someTypeRepTyConName
        ; someTypeRepDataCon <- dsLookupDataCon someTypeRepDataConName
+       ; matchableTyCon <- dsLookupTyCon matchableClassName
+       ; let matchableDataCon = tyConSingleDataCon matchableTyCon
                     -- SomeTypeRep :: forall k (a :: k). TypeRep a -> SomeTypeRep
 
        ; tc_rep <- tyConRep tc                      -- :: TyCon
@@ -1840,6 +1848,7 @@ ds_ev_typeable ty (EvTypeableTyCon tc kind_ev)
          -- former we know is not (we checked in the solver).
        ; let expr = mkApps (Var mkTrCon) [ Type (typeKind ty)
                                          , Type ty
+                                        --  , matchableEv matchableDataCon ty
                                          , tc_rep
                                          , kind_args ]
        -- ; pprRuntimeTrace "Trace mkTrTyCon" (ppr expr) expr
@@ -1851,18 +1860,20 @@ ds_ev_typeable ty (EvTypeableTyApp ev1 ev2)
   = do { e1  <- getRep ev1 t1
        ; e2  <- getRep ev2 t2
        ; mkTrApp <- dsLookupGlobalId mkTrAppName
+       ; matchableTyCon <- dsLookupTyCon matchableClassName
+       ; let matchableDataCon = tyConSingleDataCon matchableTyCon
                     -- mkTrApp :: forall k1 k2 (a :: k1 -> k2) (b :: k1).
                     --            TypeRep a -> TypeRep b -> TypeRep (a b)
-       ; let (_, k1, k2) = splitFunTy (typeKind t1)  -- drop the multiplicity,
+       ; let (_, _, k1, k2) = splitFunTy (typeKind t1)  -- drop the multiplicity,
                                                      -- since it's a kind
        ; let expr =  mkApps (mkTyApps (Var mkTrApp) [ k1, k2, t1, t2 ])
-                            [ e1, e2 ]
+                            [  e1, e2 ]
        -- ; pprRuntimeTrace "Trace mkTrApp" (ppr expr) expr
        ; return expr
        }
 
 ds_ev_typeable ty (EvTypeableTrFun evm ev1 ev2)
-  | Just (_af,m,t1,t2) <- splitFunTy_maybe ty
+  | Just (_af,m,_,t1,t2) <- splitFunTy_maybe ty
   = do { e1 <- getRep ev1 t1
        ; e2 <- getRep ev2 t2
        ; em <- getRep evm m

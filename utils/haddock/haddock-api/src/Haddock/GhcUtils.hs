@@ -764,7 +764,7 @@ typeNames ty = go ty Set.empty
       case t of
         TyVarTy{} -> acc
         AppTy t1 t2 -> go t2 $ go t1 acc
-        FunTy _ _ t1 t2 -> go t2 $ go t1 acc
+        FunTy _ _ _ t1 t2 -> go t2 $ go t1 acc
         TyConApp tcon args -> List.foldl' (\s t' -> go t' s) (Set.insert (getName tcon) acc) args
         ForAllTy bndr t' -> go t' $ go (tyVarKind (binderVar bndr)) acc
         LitTy _ -> acc
@@ -814,11 +814,11 @@ orderedFVs vs tys =
 -- | Just like 'tyCoFVsOfType', but traverses type variables in reverse order
 -- of  appearance.
 tyCoFVsOfType' :: Type -> FV
-tyCoFVsOfType' (TyVarTy v) a b c = (FV.unitFV v `unionFV` tyCoFVsOfType' (tyVarKind v)) a b c
+tyCoFVsOfType' (TyVarTy v _) a b c = (FV.unitFV v `unionFV` tyCoFVsOfType' (tyVarKind v)) a b c
 tyCoFVsOfType' (TyConApp _ tys) a b c = tyCoFVsOfTypes' tys a b c
 tyCoFVsOfType' (LitTy{}) a b c = emptyFV a b c
 tyCoFVsOfType' (AppTy fun arg) a b c = (tyCoFVsOfType' arg `unionFV` tyCoFVsOfType' fun) a b c
-tyCoFVsOfType' (FunTy _ w arg res) a b c =
+tyCoFVsOfType' (FunTy _ _ w arg res) a b c =
   ( tyCoFVsOfType' w
       `unionFV` tyCoFVsOfType' res
       `unionFV` tyCoFVsOfType' arg
@@ -863,15 +863,15 @@ defaultRuntimeRepVars = go emptyVarEnv
           ForAllTy
             (Bndr (updateTyVarKind (go subs) var) flg)
             (go subs ty)
-    go subs (TyVarTy tv)
+    go subs (TyVarTy tv m)
       | tv `elemVarEnv` subs =
           liftedRepTy
       | otherwise =
-          TyVarTy (updateTyVarKind (go subs) tv)
+          TyVarTy (updateTyVarKind (go subs) tv) m
     go subs (TyConApp tc tc_args) =
       TyConApp tc (map (go subs) tc_args)
-    go subs (FunTy af w arg res) =
-      FunTy af (go subs w) (go subs arg) (go subs res)
+    go subs (FunTy af w m arg res) =
+      FunTy af (go subs w) (go subs m) (go subs arg) (go subs res)
     go subs (AppTy t u) =
       AppTy (go subs t) (go subs u)
     go subs (CastTy x co) =

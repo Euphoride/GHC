@@ -81,7 +81,7 @@ import GHC.Types.SourceText
 import GHC.Types.Var( VarBndr(..), binderVar, tyVarSpecToBinders, visArgTypeLike )
 import GHC.Core.TyCon ( Role (..), Injectivity(..), tyConBndrVisForAllTyFlag )
 import GHC.Core.DataCon (SrcStrictness(..), SrcUnpackedness(..))
-import GHC.Builtin.Types ( constraintKindTyConName )
+import GHC.Builtin.Types ( constraintKindTyConName, matchableDataConTy )
 import GHC.Stg.EnforceEpt.TagSig
 import GHC.Parser.Annotation (noLocA)
 import GHC.Hs.Extension ( GhcRn )
@@ -1423,7 +1423,7 @@ pprIfaceDecl _ (IfacePatSyn { ifName = name,
                               , ppWhen insert_empty_ctxt $ parens empty <+> darrow
                               , ex_msg
                               , pprIfaceContextArr prov_ctxt
-                              , pprIfaceType $ foldr (IfaceFunTy visArgTypeLike many_ty)
+                              , pprIfaceType $ foldr (IfaceFunTy visArgTypeLike many_ty matchability_tyvar)
                                                      pat_ty arg_tys ])
         pat_body = braces $ sep $ punctuate comma $ map ppr pat_fldlbls
         univ_msg = pprUserIfaceForAll $ tyVarSpecToBinders univ_bndrs
@@ -1587,7 +1587,7 @@ pprIfaceConDecl ss gadt_style tycon tc_binders parent
     -- linear arrows when -XLinearTypes is disabled
     ppr_arr w = sdocOption sdocLinearTypes $ \linearTypes ->
                 if linearTypes
-                then pprTypeArrow visArgTypeLike w
+                then pprTypeArrow visArgTypeLike w (matchable_ifacety)         -- Data Constructors are matchable by default!
                 else arrow
 
     ppr_bang IfNoBang = whenPprDebug $ char '_'
@@ -2055,7 +2055,7 @@ freeNamesIfType (IfaceTyConApp tc ts) = freeNamesIfTc tc &&& freeNamesIfAppArgs 
 freeNamesIfType (IfaceTupleTy _ _ ts) = freeNamesIfAppArgs ts
 freeNamesIfType (IfaceLitTy _)        = emptyNameSet
 freeNamesIfType (IfaceForAllTy tv t)  = freeNamesIfVarBndr tv &&& freeNamesIfType t
-freeNamesIfType (IfaceFunTy _ w s t)  = freeNamesIfType s &&& freeNamesIfType t &&& freeNamesIfType w
+freeNamesIfType (IfaceFunTy _ w m s t)  = freeNamesIfType s &&& freeNamesIfType t &&& freeNamesIfType w &&& freeNamesIfType m
 freeNamesIfType (IfaceCastTy t c)     = freeNamesIfType t &&& freeNamesIfCoercion c
 freeNamesIfType (IfaceCoercionTy c)   = freeNamesIfCoercion c
 
@@ -2067,8 +2067,8 @@ freeNamesIfCoercion :: IfaceCoercion -> NameSet
 freeNamesIfCoercion (IfaceReflCo t) = freeNamesIfType t
 freeNamesIfCoercion (IfaceGReflCo _ t mco)
   = freeNamesIfType t &&& freeNamesIfMCoercion mco
-freeNamesIfCoercion (IfaceFunCo _ c_mult c1 c2)
-  = freeNamesIfCoercion c_mult &&& freeNamesIfCoercion c1 &&& freeNamesIfCoercion c2
+freeNamesIfCoercion (IfaceFunCo _ c_mult c_mat c1 c2)
+  = freeNamesIfCoercion c_mult &&& freeNamesIfCoercion c1 &&& freeNamesIfCoercion c2 &&& freeNamesIfCoercion c_mat
 freeNamesIfCoercion (IfaceTyConAppCo _ tc cos)
   = freeNamesIfTc tc &&& fnList freeNamesIfCoercion cos
 freeNamesIfCoercion (IfaceAppCo c1 c2)

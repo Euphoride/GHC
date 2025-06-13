@@ -21,6 +21,7 @@
 {-# LANGUAGE TypeFamilies               #-}
 {-# LANGUAGE TypeOperators              #-}
 {-# LANGUAGE UndecidableInstances       #-}
+{-# LANGUAGE AllowAmbiguousTypes        #-}
 
 -----------------------------------------------------------------------------
 -- |
@@ -1358,7 +1359,6 @@ class Generic a where
   from  :: a -> (Rep a) x
   -- | Convert from the representation to the datatype
   to    :: (Rep a) x -> a
-
 
 -- | Representable types of kind @* -> *@ (or kind @k -> *@, when @PolyKinds@
 -- is enabled).

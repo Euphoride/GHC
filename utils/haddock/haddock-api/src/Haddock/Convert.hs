@@ -711,7 +711,7 @@ synifyType
   -> Type
   -- ^ the type to convert
   -> LHsType GhcRn
-synifyType _ _ (TyVarTy tv) = noLocA $ HsTyVar noAnn NotPromoted $ noLocA (noUserRdr $ getName tv)
+synifyType _ _ (TyVarTy tv _) = noLocA $ HsTyVar noAnn NotPromoted $ noLocA (noUserRdr $ getName tv)
 synifyType _ vs (TyConApp tc tys) =
   maybe_sig res_ty
   where
@@ -821,12 +821,13 @@ synifyType _ vs ty@(AppTy{}) =
             ty_args
    in
     foldl (\t1 t2 -> noLocA $ HsAppTy noExtField t1 t2) ty_head' ty_args'
-synifyType s vs funty@(FunTy af w t1 t2)
+synifyType s vs funty@(FunTy af w m t1 t2)
   | isInvisibleFunArg af = synifySigmaType s vs funty
   | otherwise = noLocA $ HsFunTy noExtField w' s1 s2
   where
     s1 = synifyType WithinType vs t1
     s2 = synifyType WithinType vs t2
+    m' = synifyType WithinType vs m
     w' = synifyMultArrow vs w
 synifyType s vs forallty@(ForAllTy (Bndr _ argf) _ty) =
   case argf of
@@ -957,14 +958,14 @@ noKindTyVars
   -- ^ type to inspect
   -> VarSet
   -- ^ set of variables whose kinds can be inferred from uses in the type
-noKindTyVars _ (TyVarTy var)
+noKindTyVars _ (TyVarTy var _)
   | isLiftedTypeKind (tyVarKind var) = unitVarSet var
 noKindTyVars ts ty
   | (f, xs) <- splitAppTys ty
   , not (null xs) =
       let args = map (noKindTyVars ts) xs
           func = case f of
-            TyVarTy var
+            TyVarTy var _
               | (xsKinds, outKind) <- splitFunTys (tyVarKind var)
               , map scaledThing xsKinds `eqTypes` map typeKind xs
               , isLiftedTypeKind outKind ->
@@ -972,12 +973,12 @@ noKindTyVars ts ty
             TyConApp t ks
               | t `elem` ts
               , all noFreeVarsOfType ks ->
-                  mkVarSet [v | TyVarTy v <- xs]
+                  mkVarSet [v | TyVarTy v _ <- xs]
             _ -> noKindTyVars ts f
        in unionVarSets (func : args)
 noKindTyVars ts (ForAllTy _ t) = noKindTyVars ts t
-noKindTyVars ts (FunTy _ w t1 t2) =
-  noKindTyVars ts w
+noKindTyVars ts (FunTy _ w m t1 t2) =
+  noKindTyVars ts w `unionVarSet` noKindTyVars ts m
     `unionVarSet` noKindTyVars ts t1
     `unionVarSet` noKindTyVars ts t2
 noKindTyVars ts (CastTy t _) = noKindTyVars ts t
@@ -1167,6 +1168,6 @@ tcSplitPhiTyPreserveSynonyms ty0 = split ty0 []
 
 -- | See Note [Invariant: Never expand type synonyms]
 tcSplitPredFunTyPreserveSynonyms_maybe :: Type -> Maybe (PredType, Type)
-tcSplitPredFunTyPreserveSynonyms_maybe (FunTy af _ arg res)
+tcSplitPredFunTyPreserveSynonyms_maybe (FunTy af _ _ arg res)
   | isInvisibleFunArg af = Just (arg, res)
 tcSplitPredFunTyPreserveSynonyms_maybe _ = Nothing

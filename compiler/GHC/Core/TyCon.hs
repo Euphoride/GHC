@@ -143,7 +143,7 @@ import GHC.Prelude
 import GHC.Platform
 
 import {-# SOURCE #-} GHC.Core.TyCo.Rep
-   ( Kind, Type, PredType, mkForAllTy, mkNakedFunTy, mkNakedTyConTy )
+   ( Kind, PredType, mkForAllTy, mkNakedFunTy, mkNakedTyConTy, Type(..), setUnmatchable, countSpine )
 import {-# SOURCE #-} GHC.Core.TyCo.FVs
    ( noFreeVarsOfType )
 import {-# SOURCE #-} GHC.Core.TyCo.Ppr
@@ -1809,9 +1809,14 @@ module mutual-recursion.  And they aren't called from many places.
 So we compromise, and move their Kind calculation to the call site.
 -}
 
+isMatchableTyCon :: TyCon -> Role -> Bool
+isMatchableTyCon tc role = isInjectiveTyCon tc role && isGenerativeTyCon tc role
+
+
 mkTyCon :: Name -> [TyConBinder] -> Kind -> [Role] -> TyConDetails -> TyCon
 mkTyCon name binders res_kind roles details
-  = tc
+  | isMatchableTyCon tc Nominal = tc
+  | otherwise = tc { tyConKind = setUnmatchable (Just (spine_full - spine_res)) (mkTyConKind binders res_kind) }
   where
     -- Recurisve binding because of tcNullaryTy
     tc = TyCon { tyConName             = name
@@ -1827,6 +1832,8 @@ mkTyCon name binders res_kind roles details
                , tyConNullaryTy        = mkNakedTyConTy tc
                , tyConHasClosedResKind = noFreeVarsOfType res_kind
                , tyConTyVars           = binderVars binders }
+    spine_res = countSpine res_kind
+    spine_full = countSpine (mkTyConKind binders res_kind)
 
 -- | This is the making of an algebraic 'TyCon'.
 mkAlgTyCon :: Name

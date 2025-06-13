@@ -477,6 +477,9 @@ commitFlexi DefaultFlexi tv zonked_kind
   | isMultiplicityTy zonked_kind
   = do { traceTc "Defaulting flexi tyvar to Many:" (pprTyVar tv)
        ; return manyDataConTy }
+  | isMatchabilityTy zonked_kind
+  = do { traceTc "Defaulting flexi tyvar to Matchable:" (pprTyVar tv)
+       ; return matchableDataConTy }
   | Just (ConcreteFRR origin) <- isConcreteTyVar_maybe tv
   = do { addErr $ TcRnZonkerMessage (ZonkerCannotDefaultConcrete origin)
        ; return (anyTypeOfKind zonked_kind) }
@@ -1263,10 +1266,11 @@ zonkBracket (HsBracketTc hsb_thing ty wrap bs)
        new_ty <- zonkTcTypeToTypeX ty
        return (HsBracketTc hsb_thing new_ty wrap' bs')
   where
-    zonkQuoteWrap (QuoteWrapper ev ty) = do
+    zonkQuoteWrap (QuoteWrapper ev mev ty) = do
         ev' <- zonkIdOcc ev
+        mev' <- zonkIdOcc mev
         ty' <- zonkTcTypeToTypeX ty
-        return (QuoteWrapper ev' ty')
+        return (QuoteWrapper ev' mev' ty')
 
     zonk_b (PendingTcSplice n e) = do e' <- zonkLExpr e
                                       return (PendingTcSplice n e')

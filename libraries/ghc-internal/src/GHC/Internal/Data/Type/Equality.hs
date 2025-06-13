@@ -165,7 +165,7 @@ deriving instance a ~~ b => Bounded (a :~~: b)
 -- laws are not in fact valid in general.
 class TestEquality f where
   -- | Conditionally prove the equality of @a@ and @b@.
-  testEquality :: f a -> f b -> Maybe (a :~: b)
+  testEquality :: (Matchable f, Matchable a, Matchable b) => f a -> f b -> Maybe (a :~: b)
 
 -- | @since base-4.7.0.0
 instance TestEquality ((:~:) a) where

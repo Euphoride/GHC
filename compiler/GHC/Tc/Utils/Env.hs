@@ -148,6 +148,8 @@ import Data.IORef
 import Data.List          ( intercalate )
 import qualified Data.List.NonEmpty as NE
 
+
+
 {- *********************************************************************
 *                                                                      *
             An IO interface to looking up globals
@@ -308,11 +310,19 @@ tcLookupClass name = do
         ATyCon tc | Just cls <- tyConClass_maybe tc -> return cls
         _                                           -> wrongThingErr WrongThingClass (AGlobal thing) name
 
+
+
+isMatchableTyCon :: TyCon -> Bool
+isMatchableTyCon tc = isInjectiveTyCon tc Nominal && isGenerativeTyCon tc Nominal
+
+
+
 tcLookupTyCon :: Name -> TcM TyCon
 tcLookupTyCon name = do
     thing <- tcLookupGlobal name
     case thing of
-        ATyCon tc -> return tc
+        ATyCon tc -> do
+          return tc
         _         -> wrongThingErr WrongThingTyCon (AGlobal thing) name
 
 tcLookupAxiom :: Name -> TcM (CoAxiom Branched)
@@ -613,6 +623,7 @@ tcLookupLocalIds ns
                 Just (ATcId { tct_id = id }) ->  id
                 _ -> pprPanic "tcLookupLocalIds" (ppr name)
 
+
 -- inferInitialKind has made a suitably-shaped kind for the type or class
 -- Look it up in the local environment. This is used only for tycons
 -- that we're currently type-checking, so we're sure to find a TcTyCon.
@@ -620,7 +631,8 @@ tcLookupTcTyCon :: HasDebugCallStack => Name -> TcM TcTyCon
 tcLookupTcTyCon name = do
     thing <- tcLookup name
     case thing of
-        ATcTyCon tc -> return tc
+        ATcTyCon tc -> do
+          return tc
         _           -> pprPanic "tcLookupTcTyCon" (ppr name)
 
 

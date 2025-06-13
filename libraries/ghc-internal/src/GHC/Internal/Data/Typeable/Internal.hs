@@ -236,7 +236,7 @@ data TypeRep a where
                , trFunMul :: !(TypeRep m)
                , trFunArg :: !(TypeRep a)
                , trFunRes :: !(TypeRep b) }
-            -> TypeRep (FUN m a b)
+            -> TypeRep (FUN m 'M a b)
 
 -- | A 'TypeableInstance' wraps up a 'Typeable' instance for explicit
 -- handling. For internal use: for defining 'TypeRep' pattern.
@@ -512,8 +512,8 @@ pattern App f x <- (splitApp -> IsApp f x)
   where App f x = mkTrAppChecked f x
 
 data AppOrCon (a :: k) where
-    IsApp :: forall k k' (f :: k' -> k) (x :: k'). ()
-          => TypeRep f %1 -> TypeRep x %1 -> AppOrCon (f x)
+    IsApp :: forall k k' (f :: k' -> k) (x :: k').
+          TypeRep f %1 -> TypeRep x %1 -> AppOrCon (f x)
     -- See Note [Con evidence]
     IsCon :: NotApplication a => TyCon %1 -> [SomeTypeRep] %1 -> AppOrCon a
 
@@ -810,8 +810,8 @@ vecElemTypeRep e =
 
 bareArrow :: forall (m :: Multiplicity) (r1 :: RuntimeRep) (r2 :: RuntimeRep)
                     (a :: TYPE r1) (b :: TYPE r2). ()
-          => TypeRep (FUN m a b)
-          -> TypeRep (FUN m :: TYPE r1 -> TYPE r2 -> Type)
+          => TypeRep (FUN m 'M a b)
+          -> TypeRep (FUN m 'M :: TYPE r1 -> TYPE r2 -> Type)
 bareArrow (TrFun _ m a b) =
     mkTrCon funTyCon [SomeTypeRep m, SomeTypeRep rep1, SomeTypeRep rep2]
   where
@@ -1178,7 +1178,7 @@ typeLitTypeRep nm kind_tycon = mkTrCon (mkTypeLitTyCon nm kind_tycon) []
 -- | For compiler use.
 mkTrFun :: forall (m :: Multiplicity) (r1 :: RuntimeRep) (r2 :: RuntimeRep)
                   (a :: TYPE r1) (b :: TYPE r2).
-           TypeRep m -> TypeRep a -> TypeRep b -> TypeRep ((FUN m a b) :: Type)
+           TypeRep m -> TypeRep a -> TypeRep b -> TypeRep ((FUN m 'M a b) :: Type)
 mkTrFun mul arg res = TrFun
     { trFunFingerprint = fpr
     , trFunMul = mul

@@ -22,6 +22,9 @@ import GHC.Data.FastString
 
 import GHC.Data.Maybe
 
+import GHC.Tc.Utils.Env (tcLookupClass)
+import GHC.Tc.Utils.TcMType (emitWanted)
+
 -- friends:
 import GHC.Tc.Utils.Unify    ( tcSubTypeAmbiguity )
 import GHC.Tc.Solver         ( simplifyAmbiguityCheck )
@@ -742,7 +745,7 @@ check_type :: ValidityEnv -> Type -> TcM ()
 -- Rank is allowed rank for function args
 -- Rank 0 means no for-alls anywhere
 
-check_type _ (TyVarTy _)
+check_type _ (TyVarTy _ _)
   = return ()
 
 check_type ve (AppTy ty1 ty2)
@@ -816,7 +819,7 @@ check_type ve@(ValidityEnv{ ve_tidy_env = env
 
 check_type (ve@ValidityEnv{ ve_tidy_env = env, ve_ctxt = ctxt
                           , ve_rank = rank })
-           ty@(FunTy _ mult arg_ty res_ty)
+           ty@(FunTy _ mult mat arg_ty res_ty)
   = do  { failIfTcM (not (linearityAllowed ctxt) && not (isManyTy mult))
                      (env, TcRnLinearFuncInKind (tidyType env ty))
         ; check_type (ve{ve_rank = arg_rank}) arg_ty
@@ -828,6 +831,9 @@ check_type _ ty@(ForAllTy {}) = pprPanic "check_type" (ppr ty)
 check_type _ ty@(CoercionTy {}) = pprPanic "check_type" (ppr ty)
 
 ----------------------------------------
+
+
+ -- ! FLAG -> This is where the saturation check happens!!
 check_syn_tc_app :: ValidityEnv
                  -> KindOrType -> TyCon -> [KindOrType] -> TcM ()
 -- Used for type synonyms and type synonym families,
@@ -857,7 +863,22 @@ check_syn_tc_app (ve@ValidityEnv{ ve_ctxt = ctxt, ve_expand = expand })
   = check_args_only expand
 
   | otherwise
-  = failWithTc (tyConArityErr tc tys)
+  = check_args_only expand -- failWithTc (tyConArityErr tc tys)
+
+  -- | otherwise -- Unsaturated
+  -- = do { -- See Note [Unsaturated type families]
+  --      ; unsaturated <- xoptM LangExt.UnsaturatedTypeFamilies
+  --      ; if unsaturated && suggest_unsaturated then
+  --      ! FLAG -> check_args_only is what i want here
+  --             check_args_only expand
+  --        else failWithTc (tyConArityErr suggest_unsaturated tc tys) }
+  -- where
+  --   suggest_unsaturated = okUnsaturatedCtxt ctxt
+  --   -- only suggest -XUnsaturatedTypeFamilies if the application is otherwise
+  --   -- legal
+
+  --   tc_arity  = tyConArity tc
+
   where
     tc_arity  = tyConArity tc
 
@@ -1520,6 +1541,8 @@ compiled elsewhere). In these cases, we let them go through anyway.
 We can also have instances for functions: @instance Foo (a -> b) ...@.
 -}
 
+
+-- !FLAG TODO: Emit here for all TyVar AppTys that they have to be matchable.
 checkValidInstHead :: UserTypeCtxt -> Class -> [Type] -> TcM ()
 checkValidInstHead ctxt clas cls_args
   = do { dflags   <- getDynFlags
@@ -1554,6 +1577,8 @@ in hsig files, where `is_sig` is True.
 
 -}
 
+-- ! FLAG TODO: You have to close matchable in check_special_inst_head lol dummy
+
 check_special_inst_head :: DynFlags -> HscSource -> UserTypeCtxt
                         -> Class -> [Type] -> TcM ()
 -- Wow!  There are a surprising number of ad-hoc special cases here.
@@ -1572,7 +1597,7 @@ check_special_inst_head dflags hs_src ctxt clas cls_args
   -- Disallow hand-written Typeable instances, except that we
   -- allow a standalone deriving declaration: they are no-ops,
   -- and we warn about them in GHC.Tc.Deriv.deriveStandalone.
-  | clas_nm == typeableClassName
+  | clas_nm == typeableClassName || clas_nm == matchableClassName
   , not (hs_src == HsigFile)
     -- Note [Instances of built-in classes in signature files]
   , hand_written_bindings
@@ -1691,7 +1716,7 @@ tcInstHeadTyNotSynonym :: Type -> Bool
 tcInstHeadTyNotSynonym ty
   = case ty of  -- Do not use splitTyConApp,
                 -- because that expands synonyms!
-        TyConApp tc _ -> not (isTypeSynonymTyCon tc) || tc == unrestrictedFunTyCon
+        TyConApp tc _ -> not (isTypeSynonymTyCon tc) || tc == unrestrictedFunTyCon || tc == unmatchableFunTyCon
                 -- Allow (->), e.g. instance Category (->),
                 -- even though it's a type synonym for FUN 'Many
         _ -> True
@@ -1702,12 +1727,14 @@ tcInstHeadTyAppAllTyVars :: Type -> Bool
 -- or a type-level literal.
 -- But we allow
 -- 1) kind instantiations
--- 2) the type (->) = FUN 'Many, even though it's not in this form.
+-- 2) the type (->) = FUN 'Many 'Matchable, even though it's not in this form.
+-- 
+-- ** It is perhaps quite poor engineering that a change to FUN cascades here.
 tcInstHeadTyAppAllTyVars ty
   | Just (tc, tys) <- tcSplitTyConApp_maybe (dropCasts ty)
   = let tys' = filterOutInvisibleTypes tc tys  -- avoid kinds
         tys'' | tc `hasKey` fUNTyConKey
-              , ManyTy : tys_t <- tys'
+              , ManyTy : _ : tys_t <- tys'
               = tys_t
               | otherwise = tys'
     in ok tys''
@@ -1728,7 +1755,7 @@ dropCasts :: Type -> Type
 -- To consider: drop only HoleCo casts
 dropCasts (CastTy ty _)       = dropCasts ty
 dropCasts (AppTy t1 t2)       = mkAppTy (dropCasts t1) (dropCasts t2)
-dropCasts ty@(FunTy _ w t1 t2)  = ty { ft_mult = dropCasts w, ft_arg = dropCasts t1, ft_res = dropCasts t2 }
+dropCasts ty@(FunTy _ w m t1 t2)  = ty { ft_mult = dropCasts w, ft_arg = dropCasts t1, ft_res = dropCasts t2, ft_mat = dropCasts m }
 dropCasts (TyConApp tc tys)   = mkTyConApp tc (map dropCasts tys)
 dropCasts (ForAllTy b ty)     = ForAllTy (dropCastsB b) (dropCasts ty)
 dropCasts ty                  = ty  -- LitTy, TyVarTy, CoercionTy
@@ -2075,8 +2102,9 @@ checkValidInstance ctxt hs_type ty = case tau of
   TyConApp tc inst_tys
     | Just clas <- tyConClass_maybe tc
     -> do
-        { setSrcSpanA head_loc $
+        { setSrcSpanA head_loc $ do {
           checkValidInstHead ctxt clas inst_tys
+        }
 
         ; traceTc "checkValidInstance {" (ppr ty)
 

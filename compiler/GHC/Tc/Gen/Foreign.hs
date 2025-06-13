@@ -128,7 +128,9 @@ normaliseFfiType ty
          normaliseFfiType' fam_envs ty
 
 normaliseFfiType' :: FamInstEnvs -> Type -> TcM (Reduction, Bag GlobalRdrElt)
-normaliseFfiType' env ty0 = runWriterT $ go Representational initRecTc ty0
+normaliseFfiType' env ty0 = do
+  traceTc "normaliseFfiType!" (ppr ty0)
+  runWriterT $ go Representational initRecTc ty0
   where
     go :: Role -> RecTcChecker -> Type -> WriterT (Bag GlobalRdrElt) TcM Reduction
     go role rec_nts ty

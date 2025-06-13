@@ -70,7 +70,7 @@ type TyLitQ              = Q TyLit
 type CxtQ                = Q Cxt
 type PredQ               = Q Pred
 type DerivClauseQ        = Q DerivClause
-type MatchQ              = Q Match
+type MatchQ              = Q TH.Match
 type ClauseQ             = Q Clause
 type BodyQ               = Q Body
 type GuardQ              = Q Guard
@@ -258,14 +258,14 @@ patGE ss e = do { ss' <- sequenceA ss;
                   pure (PatG ss', e') }
 
 -------------------------------------------------------------------------------
--- *   Match and Clause
+-- *   TH.Match and Clause
 
 -- | Use with 'caseE'
-match :: Quote m => m Pat -> m Body -> [m Dec] -> m Match
+match :: Quote m => m Pat -> m Body -> [m Dec] -> m TH.Match
 match p rhs ds = do { p' <- p;
                       r' <- rhs;
                       ds' <- sequenceA ds;
-                      pure (Match p' r' ds') }
+                      pure (TH.Match p' r' ds') }
 
 -- | Use with 'funD'
 clause :: Quote m => [m Pat] -> m Body -> [m Dec] -> m Clause
@@ -329,7 +329,7 @@ lam1E :: Quote m => m Pat -> m Exp -> m Exp
 lam1E p e = lamE [p] e
 
 -- | Lambda-case (@\case@)
-lamCaseE :: Quote m => [m Match] -> m Exp
+lamCaseE :: Quote m => [m TH.Match] -> m Exp
 lamCaseE ms = LamCaseE <$> sequenceA ms
 
 -- | Lambda-cases (@\cases@)
@@ -354,7 +354,7 @@ multiIfE alts = MultiIfE <$> sequenceA alts
 letE :: Quote m => [m Dec] -> m Exp -> m Exp
 letE ds e = do { ds2 <- sequenceA ds; e2 <- e; pure (LetE ds2 e2) }
 
-caseE :: Quote m => m Exp -> [m Match] -> m Exp
+caseE :: Quote m => m Exp -> [m TH.Match] -> m Exp
 caseE e ms = do { e1 <- e; ms1 <- sequenceA ms; pure (CaseE e1 ms1) }
 
 doE :: Quote m => Maybe ModName -> [m Stmt] -> m Exp

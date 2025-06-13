@@ -234,7 +234,7 @@ debug_ppr_ty :: PprPrec -> Type -> SDoc
 debug_ppr_ty _ (LitTy l)
   = ppr l
 
-debug_ppr_ty _ (TyVarTy tv)
+debug_ppr_ty _ (TyVarTy tv _)
   = ppr tv  -- With -dppr-debug we get (tv :: kind)
 
 debug_ppr_ty prec (FunTy { ft_af = af, ft_mult = mult, ft_arg = arg, ft_res = res })

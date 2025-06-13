@@ -45,7 +45,7 @@ import GHC.Tc.Module ( runTcInteractive )
 
 import GHC.Core.Type
 import GHC.Core.TyCo.Compare( eqType )
-import GHC.Core.TyCon       ( tyConDataCons )
+import GHC.Core.TyCon       ( tyConDataCons, tyConSingleDataCon )
 import GHC.Core
 import GHC.Core.FVs       ( exprsSomeFreeVarsList, exprFreeVars )
 import GHC.Core.SimpleOpt ( simpleOptPgm, simpleOptExpr )
@@ -723,6 +723,8 @@ mkUnsafeCoercePrimPair :: Id -> CoreExpr -> DsM (Id, CoreExpr)
 mkUnsafeCoercePrimPair _old_id old_expr
   = do { unsafe_equality_proof_id <- dsLookupGlobalId unsafeEqualityProofName
        ; unsafe_equality_tc       <- dsLookupTyCon unsafeEqualityTyConName
+       ; matchable_tycon <- dsLookupTyCon matchableClassName
+       ; let matchable_dcon = tyConSingleDataCon matchable_tycon
 
        ; let [unsafe_refl_data_con] = tyConDataCons unsafe_equality_tc
 
@@ -744,13 +746,17 @@ mkUnsafeCoercePrimPair _old_id old_expr
                , rr_cv_ty    -- rr_cv :: r1 ~# r2
                , ab_cv_ty    -- ab_cv :: (alpha |> alpha_co ~# beta)
                ]
-
+             
              -- Returns (scrutinee, scrutinee type, type of covar in AltCon)
              unsafe_equality k a b
-               = ( mkTyApps (Var unsafe_equality_proof_id) [k,b,a]
+               = ( mkTyApps (Var unsafe_equality_proof_id) [k,b,a] -- `mkApps` [mbdict, madict]
                  , mkTyConApp unsafe_equality_tc [k,b,a]
                  , mkNomEqPred a b
                  )
+                 where
+                   madict = mkCoreConApps matchable_dcon [Type k, Type a]
+                   mbdict = mkCoreConApps matchable_dcon [Type k, Type b]
+
              -- NB: UnsafeRefl :: (b ~# a) -> UnsafeEquality a b, so we have to
              -- carefully swap the arguments above
 

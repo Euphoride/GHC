@@ -60,7 +60,7 @@ import GHC.Core( hasSomeUnfolding )
 import GHC.Core.Type
 import GHC.Core.Multiplicity
 import GHC.Core.Predicate
-import GHC.Core.TyCo.Rep( mkNakedFunTy )
+import GHC.Core.TyCo.Rep( mkNakedFunTy, Matchability(..))
 import GHC.Core.TyCon( isTypeFamilyTyCon )
 
 import GHC.Types.Var
@@ -72,7 +72,7 @@ import GHC.Types.Name
 import GHC.Types.Name.Env
 import GHC.Types.SrcLoc
 
-import GHC.Builtin.Names( mkUnboundName )
+import GHC.Builtin.Names( mkUnboundName, matchableClassName, unmatchableClassName )
 import GHC.Unit.Module( Module, getModule )
 
 import GHC.Utils.Misc as Utils ( singleton )
@@ -86,6 +86,8 @@ import Control.Monad( unless )
 import Data.Foldable ( toList )
 import qualified Data.List.NonEmpty as NE
 import Data.Maybe( mapMaybe )
+
+-- import GHC.Tc.Gen.HsType ( inferMatchableThetas, alterClsTvs )
 
 {- -------------------------------------------------------------
           Note [Overview of type signatures]
@@ -386,6 +388,7 @@ later.  Pattern synonyms are top-level, so there's no problem with
 completely solving them.
 -}
 
+
 tcPatSynSig :: Name -> LHsSigType GhcRn -> TcM TcPatSynSig
 -- See Note [Pattern synonym signatures]
 -- See Note [Recipe for checking a signature] in GHC.Tc.Gen.HsType
@@ -414,6 +417,15 @@ tcPatSynSig name sig_ty@(L _ (HsSig{sig_bndrs = hs_outer_bndrs, sig_body = hs_ty
              (implicit_tvs, univ_bndrs) = case outer_bndrs of
                HsOuterImplicit{hso_ximplicit = implicit_tvs} -> (implicit_tvs, [])
                HsOuterExplicit{hso_xexplicit = univ_bndrs}   -> ([], univ_bndrs)
+       
+      --  ; mcls <- tcLookupClass matchableClassName
+      --  ; ucls <- tcLookupClass unmatchableClassName
+
+      --  ; (univ_bndrs', req', body_ty1) <- inferMatchableThetas (mcls, ucls) (univ_bndrs, req, body_ty)
+      --  ; (ex_bndrs', prov', body_ty2) <- inferMatchableThetas (mcls, ucls) (ex_bndrs, prov, body_ty1)
+
+      --  ; let (univ_bndrs'', req'', body_ty3) = alterClsTvs mcls Matchable $ alterClsTvs ucls MaybeUnmatchable (univ_bndrs', req', body_ty2)
+      --  ; let (ex_bndrs'', prov'', body_ty4) = alterClsTvs mcls Matchable $ alterClsTvs ucls MaybeUnmatchable (ex_bndrs', prov', body_ty3)
 
        ; implicit_tvs <- zonkAndScopedSort implicit_tvs
        ; let implicit_bndrs = mkTyVarBinders SpecifiedSpec implicit_tvs
@@ -455,6 +467,7 @@ tcPatSynSig name sig_ty@(L _ (HsSig{sig_bndrs = hs_outer_bndrs, sig_body = hs_ty
            arg_tys
        ; checkTypeHasFixedRuntimeRep FixedRuntimeRepPatSynSigRes res_ty
 
+      --  ; let body_ty' = quantifyMatchabilities body_ty
        ; traceTc "tcTySig }" $
          vcat [ text "kvs"          <+> ppr_tvs (binderVars kv_bndrs)
               , text "implicit_tvs" <+> ppr_tvs (binderVars implicit_bndrs)

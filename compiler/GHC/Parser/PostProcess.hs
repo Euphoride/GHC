@@ -147,7 +147,7 @@ import GHC.Core.Type    ( Specificity(..) )
 import GHC.Builtin.Types( cTupleTyConName, tupleTyCon, tupleDataCon,
                           nilDataConName, nilDataConKey,
                           listTyConName, listTyConKey, sumDataCon,
-                          unrestrictedFunTyCon , listTyCon_RDR, unitDataCon )
+                          unrestrictedFunTyCon , listTyCon_RDR, unitDataCon, unmatchableFunTyCon )
 import GHC.Types.ForeignCall
 import GHC.Types.SrcLoc
 import GHC.Types.Unique ( hasKey )
@@ -2905,7 +2905,7 @@ checkPrecP (L l (_,i)) (L _ ol)
  | otherwise = addFatalError $ mkPlainErrorMsgEnvelope l (PsErrPrecedenceOutOfRange i)
   where
     -- If you change this, consider updating Note [Fixity of (->)] in GHC/Types.hs
-    specialOp op = unLoc op == getRdrName unrestrictedFunTyCon
+    specialOp op = (unLoc op == getRdrName unrestrictedFunTyCon) || (unLoc op == getRdrName unmatchableFunTyCon)
 
 mkRecConstrOrUpdate
         :: Bool

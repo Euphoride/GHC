@@ -5,6 +5,7 @@
 {-# LANGUAGE PolyKinds #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE StandaloneKindSignatures #-}
+{-# LANGUAGE AllowAmbiguousTypes #-}
 {-# OPTIONS_HADDOCK print-explicit-runtime-reps #-}
 
 -----------------------------------------------------------------------------

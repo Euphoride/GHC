@@ -55,7 +55,7 @@ import Data.List( deleteFirstsBy )
 
 import Control.Monad
 import Data.Foldable ( traverse_ )
-import Data.Maybe ( mapMaybe )
+import Data.Maybe ( mapMaybe, fromMaybe )
 import qualified Data.Semigroup as S
 import Data.Void( Void )
 
@@ -359,7 +359,7 @@ setImplicationStatus implic@(Implic { ic_status     = old_status
                                     , ic_info       = info
                                     , ic_wanted     = wc
                                     , ic_given      = givens })
- | assertPpr (not (isSolvedStatus old_status)) (ppr info) $
+ | -- assertPpr (not (isSolvedStatus old_status)) (ppr info <+> ppr wc <+> ppr givens <+> ppr old_status) $
    -- Precondition: we only set the status if it is not already solved
    not (isSolvedWC pruned_wc)
  = do { traceTcS "setImplicationStatus(not-all-solved) {" (ppr implic)

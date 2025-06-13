@@ -41,7 +41,8 @@ import GHC.Types.Var.Set   ( TyCoVarSet )
 
 import GHC.Utils.Misc      ( HasDebugCallStack, equalLength )
 import GHC.Utils.Outputable
-import GHC.Utils.Panic     ( assertPpr )
+import GHC.Utils.Panic     ( assertPpr, pprPanic )
+import Data.Maybe (fromMaybe)
 
 {-
 %************************************************************************
@@ -350,16 +351,18 @@ mkAppRedn (Reduction co1 ty1) (Reduction co2 ty2)
 mkFunRedn :: Role
           -> FunTyFlag
           -> ReductionN -- ^ multiplicity reduction
+          -> ReductionN -- ^ matchability reduction
           -> Reduction  -- ^ argument reduction
           -> Reduction  -- ^ result reduction
           -> Reduction
 mkFunRedn r af
   (Reduction w_co w_ty)
+  (Reduction m_co m_ty)
   (Reduction arg_co arg_ty)
   (Reduction res_co res_ty)
     = mkReduction
-        (mkFunCo r af w_co arg_co res_co)
-        (mkFunTy   af w_ty arg_ty res_ty)
+        (mkFunCo r af w_co m_co arg_co res_co)
+        (mkFunTy   af w_ty m_ty arg_ty res_ty)
 {-# INLINE mkFunRedn #-}
 
 -- | Create a 'Reduction' associated to a Π type,
